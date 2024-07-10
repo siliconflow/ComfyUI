@@ -1,9 +1,6 @@
 name: "Windows Release packaging"
 
 on:
-  push:
-    branches:
-      - custom-release
   workflow_dispatch:
     inputs:
       cu:

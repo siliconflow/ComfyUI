@@ -103,13 +103,11 @@ jobs:
                 tag: "latest"
                 overwrite: true
 
-        - name: Upload to oss
-          id: upload_to_oss
-          uses: tvrcgo/oss-action@master
+        - uses: yizhoumo/setup-ossutil@v2
           with:
-            key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
-            key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-            region: oss-cn-beijing
-            bucket: bizy-air
-            assets: |
-              new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z:/windows_portable/
+            ossutil-version: '1.7.18'
+            endpoint: oss-cn-beijing
+            access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
+            access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+
+        - run: ossutil cp -f new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z oss://bizy-air/

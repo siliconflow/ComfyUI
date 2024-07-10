@@ -106,7 +106,7 @@ jobs:
         - uses: yizhoumo/setup-ossutil@v2
           with:
             ossutil-version: '1.7.18'
-            endpoint: oss-cn-beijing
+            endpoint: oss-cn-beijing.aliyuncs.com
             access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
             access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
 

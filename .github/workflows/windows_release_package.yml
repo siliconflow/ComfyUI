@@ -102,3 +102,14 @@ jobs:
                 file: new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z
                 tag: "latest"
                 overwrite: true
+
+        - name: Upload to oss
+          id: upload_to_oss
+          uses: tvrcgo/oss-action@master
+          with:
+            key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
+            key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+            region: oss-cn-beijing
+            bucket: bizy-air
+            assets: |
+              new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z:/windows_portable/

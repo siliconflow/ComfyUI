@@ -52,11 +52,14 @@ jobs:
           with:
             fetch-depth: 0
             persist-credentials: false
+            path: ComfyUI
         - uses: actions/checkout@v4
+          name: Checkout BizyAir
           with:
             repository: siliconflow/BizyAir
-            path: custom_nodes/BizyAir
+            path: ComfyUI/custom_nodes/BizyAir
         - shell: bash
+          working-directory: ComfyUI
           run: |
             cd ..
             cp -r ComfyUI ComfyUI_copy
@@ -98,6 +101,6 @@ jobs:
           uses: svenstaro/upload-release-action@v2
           with:
                 repo_token: ${{ secrets.GITHUB_TOKEN }}
-                file: new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z
+                file: ComfyUI/new_ComfyUI_windows_portable_nvidia_cu${{ inputs.cu }}_or_cpu.7z
                 tag: "latest"
                 overwrite: true

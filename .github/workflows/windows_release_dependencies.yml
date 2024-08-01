@@ -27,7 +27,7 @@ on:
         default: "8"
 
       cpu:
-        description: 'if it is cpu'
+        description: 'if it is a cpu build'
         required: false
         type: boolean
         default: true
@@ -42,7 +42,7 @@ jobs:
   build_dependencies:
     runs-on: windows-latest
     steps:
-        - if: ${{ inputs.cpu == true }}
+        - if: inputs.cpu
           run: echo "BIZY_VARIANT=cpu" >> ${GITHUB_ENV}
         - uses: actions/checkout@v4
         - uses: actions/setup-python@v5

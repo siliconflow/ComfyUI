@@ -43,6 +43,10 @@ concurrency:
 jobs:
   deps:
     uses: ./.github/workflows/windows_release_dependencies.yml
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: read
     with:
       xformers: ${{ inputs.xformers }}
       cu: ${{ inputs.cu }}

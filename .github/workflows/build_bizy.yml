@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - use-cpu
+
   workflow_dispatch:
     inputs:
       cu:
@@ -44,19 +45,19 @@ jobs:
   deps:
     uses: ./.github/workflows/windows_release_dependencies.yml
     with:
-      xformers: ${{ inputs.xformers }}
-      cu: ${{ inputs.cu }}
-      python_minor: ${{ inputs.python_minor }}
-      python_patch: ${{ inputs.python_patch }}
-      cpu: ${{ inputs.cpu }}
+      xformers: ${{ inputs.xformers || '' }}
+      cu: ${{ inputs.cu || 121 }}
+      python_minor: ${{ inputs.python_minor || 11 }}
+      python_patch: ${{ inputs.python_patch || 8 }}
+      cpu: ${{ inputs.cpu || true }}
   build:
+    uses: ./.github/workflows/windows_release_package.yml
     permissions:
       contents: write
       packages: write
       pull-requests: read
-    uses: ./.github/workflows/windows_release_package.yml
     with:
-      cu: ${{ inputs.cu }}
-      python_minor: ${{ inputs.python_minor }}
-      python_patch: ${{ inputs.python_patch }}
-      cpu: ${{ inputs.cpu }}
+      cu: ${{ inputs.cu || 121 }}
+      python_minor: ${{ inputs.python_minor || 11 }}
+      python_patch: ${{ inputs.python_patch || 8 }}
+      cpu: ${{ inputs.cpu || true }}

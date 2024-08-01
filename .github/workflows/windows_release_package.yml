@@ -68,7 +68,7 @@ jobs:
     steps:
         - if: ${{ inputs.cpu == true }}
           shell: bash
-          run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
+          run: echo "BIZY_VARIANT=none" >> $GITHUB_ENV
         - uses: actions/checkout@v4
           with:
             fetch-depth: 0

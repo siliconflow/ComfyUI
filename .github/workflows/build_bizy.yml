@@ -1,6 +1,9 @@
 name: "Build BizyAir"
 
 on:
+  push:
+    branches:
+      - use-cpu
   workflow_dispatch:
     inputs:
       cu:
@@ -32,6 +35,10 @@ on:
         required: false
         type: string
         default: ""
+
+concurrency:
+  group: bizyairui_releases-build-cpu${{ inputs.cpu }}-${{ inputs.python_minor }}-xformers${{ inputs.xformers }}-${{ inputs.python_patch }}-${{ inputs.python_minor }}-${{ inputs.cu }}
+  cancel-in-progress: true
 
 jobs:
   deps:

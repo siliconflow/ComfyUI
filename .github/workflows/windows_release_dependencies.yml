@@ -87,7 +87,7 @@ jobs:
     steps:
         - if: ${{ inputs.cpu == true }}
           shell: bash
-          run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
+          run: echo "BIZY_VARIANT=none" >> $GITHUB_ENV
         - uses: actions/cache/restore@v4
           id: cache
           if: ${{ !inputs.force }}

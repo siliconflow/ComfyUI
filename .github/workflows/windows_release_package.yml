@@ -51,6 +51,7 @@ jobs:
               ${{ env.BIZY_VARIANT }}_python_deps.tar
               update_comfyui_and_python_dependencies.bat
             key: ${{ runner.os }}-build-${{ env.BIZY_VARIANT }}-${{ inputs.python_minor }}
+            fail-on-cache-miss: true
         - shell: bash
           run: |
             mv ${{ env.BIZY_VARIANT }}_python_deps.tar ../

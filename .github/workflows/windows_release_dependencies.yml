@@ -42,8 +42,9 @@ jobs:
   build_dependencies:
     runs-on: windows-latest
     steps:
-        - if: inputs.cpu
-          run: echo "BIZY_VARIANT=cpu" >> ${GITHUB_ENV}
+        - if: ${{ inputs.cpu == true }}
+          shell: bash
+          run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
         - uses: actions/checkout@v4
         - uses: actions/setup-python@v5
           with:

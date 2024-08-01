@@ -31,6 +31,13 @@ on:
         required: false
         type: boolean
         default: true
+
+      force:
+        description: 'force update the dependencies'
+        required: false
+        type: boolean
+        default: false
+
   workflow_dispatch:
     inputs:
       xformers:
@@ -77,6 +84,7 @@ jobs:
           run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
         - uses: actions/cache/restore@v4
           id: cache
+          if: github.event_name != 'workflow_dispatch' && !(github.event.inputs.force || false)
           with:
             path: |
               ${{ env.BIZY_VARIANT }}_python_deps.tar

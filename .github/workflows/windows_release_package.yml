@@ -50,6 +50,10 @@ jobs:
         - if: ${{ inputs.cpu == true }}
           shell: bash
           run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
+        - uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+            persist-credentials: false
         - uses: ./.github/workflows/windows_release_dependencies.yml
           with:
             xformers: ${{ inputs.xformers }}
@@ -73,11 +77,6 @@ jobs:
             tar xf ${{ env.BIZY_VARIANT }}_python_deps.tar
             pwd
             ls
-
-        - uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
-            persist-credentials: false
         - uses: actions/checkout@v4
           name: Checkout BizyAir
           with:

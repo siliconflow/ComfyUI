@@ -26,12 +26,31 @@ on:
         required: false
         type: boolean
         default: true
-
-      xformers:
-        description: 'xformers version'
-        required: false
+  workflow_call:
+    inputs:
+      cu:
+        description: 'cuda version'
+        required: true
         type: string
-        default: ""
+        default: "121"
+
+      python_minor:
+        description: 'python minor version'
+        required: true
+        type: string
+        default: "11"
+
+      python_patch:
+        description: 'python patch version'
+        required: true
+        type: string
+        default: "8"
+
+      cpu:
+        description: 'if it is a cpu build'
+        required: false
+        type: boolean
+        default: true
 env:
   BIZY_VARIANT: cu${{ inputs.cu }}
 
@@ -54,13 +73,6 @@ jobs:
           with:
             fetch-depth: 0
             persist-credentials: false
-        - uses: ./.github/workflows/windows_release_dependencies.yml
-          with:
-            xformers: ${{ inputs.xformers }}
-            cu: ${{ inputs.cu }}
-            python_minor: ${{ inputs.python_minor }}
-            python_patch: ${{ inputs.python_patch }}
-            cpu: ${{ inputs.cpu }}
         - uses: actions/cache/restore@v4
           id: cache
           with:

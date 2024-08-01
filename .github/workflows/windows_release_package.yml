@@ -26,6 +26,12 @@ on:
         required: false
         type: boolean
         default: true
+
+      xformers:
+        description: 'xformers version'
+        required: false
+        type: string
+        default: ""
 env:
   BIZY_VARIANT: cu${{ inputs.cu }}
 
@@ -44,6 +50,13 @@ jobs:
         - if: ${{ inputs.cpu == true }}
           shell: bash
           run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
+        - uses: ./.github/workflows/windows_release_dependencies.yml
+          with:
+            xformers: ${{ inputs.xformers }}
+            cu: ${{ inputs.cu }}
+            python_minor: ${{ inputs.python_minor }}
+            python_patch: ${{ inputs.python_patch }}
+            cpu: ${{ inputs.cpu }}
         - uses: actions/cache/restore@v4
           id: cache
           with:

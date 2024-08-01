@@ -1,6 +1,36 @@
 name: "Windows Release dependencies"
 
 on:
+  workflow_call:
+    inputs:
+      xformers:
+        description: 'xformers version'
+        required: false
+        type: string
+        default: ""
+      cu:
+        description: 'cuda version'
+        required: true
+        type: string
+        default: "121"
+
+      python_minor:
+        description: 'python minor version'
+        required: true
+        type: string
+        default: "11"
+
+      python_patch:
+        description: 'python patch version'
+        required: true
+        type: string
+        default: "8"
+
+      cpu:
+        description: 'if it is a cpu build'
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       xformers:

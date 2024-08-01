@@ -43,10 +43,6 @@ concurrency:
 jobs:
   deps:
     uses: ./.github/workflows/windows_release_dependencies.yml
-    permissions:
-      contents: write
-      packages: write
-      pull-requests: read
     with:
       xformers: ${{ inputs.xformers }}
       cu: ${{ inputs.cu }}
@@ -54,6 +50,10 @@ jobs:
       python_patch: ${{ inputs.python_patch }}
       cpu: ${{ inputs.cpu }}
   build:
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: read
     uses: ./.github/workflows/windows_release_package.yml
     with:
       cu: ${{ inputs.cu }}

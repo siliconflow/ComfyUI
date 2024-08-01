@@ -68,6 +68,12 @@ on:
         required: false
         type: boolean
         default: true
+
+      force:
+        description: 'force update the dependencies'
+        required: false
+        type: boolean
+        default: true
 #  push:
 #    branches:
 #      - master
@@ -84,7 +90,7 @@ jobs:
           run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
         - uses: actions/cache/restore@v4
           id: cache
-          if: ${{ github.event_name != 'workflow_dispatch' && !github.event.inputs.force }}
+          if: ${{ !github.event.inputs.force }}
           with:
             path: |
               ${{ env.BIZY_VARIANT }}_python_deps.tar

@@ -83,13 +83,13 @@ jobs:
               update_comfyui_and_python_dependencies.bat
             key: ${{ runner.os }}-build-${{ env.BIZY_VARIANT }}-${{ inputs.python_minor }}
         - uses: actions/checkout@v4
-          if: !steps.cache.outputs.cache-hit
+          if: ${{ !steps.cache.outputs.cache-hit }}
         - uses: actions/setup-python@v5
-          if: !steps.cache.outputs.cache-hit
+          if: ${{ !steps.cache.outputs.cache-hit }}
           with:
             python-version: 3.${{ inputs.python_minor }}.${{ inputs.python_patch }}
         - shell: bash
-          if: !steps.cache.outputs.cache-hit
+          if: ${{ !steps.cache.outputs.cache-hit }}
           run: |
             echo "@echo off
             call update_comfyui.bat nopause
@@ -110,7 +110,7 @@ jobs:
             tar cf ${{ env.BIZY_VARIANT }}_python_deps.tar ${{ env.BIZY_VARIANT }}_python_deps
 
         - uses: actions/cache/save@v4
-          if: !steps.cache.outputs.cache-hit
+          if: ${{ !steps.cache.outputs.cache-hit }}
           with:
             path: |
               ${{ env.BIZY_VARIANT }}_python_deps.tar

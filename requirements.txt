@@ -16,3 +16,4 @@ psutil
 kornia>=0.7.1
 spandrel
 soundfile
+numpy<2.0

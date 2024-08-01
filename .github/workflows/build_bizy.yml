@@ -44,6 +44,7 @@ concurrency:
 jobs:
   deps:
     uses: ./.github/workflows/windows_release_dependencies.yml
+    secrets: inherit
     with:
       xformers: ${{ inputs.xformers || '' }}
       cu: ${{ inputs.cu || 121 }}
@@ -57,6 +58,7 @@ jobs:
       contents: write
       packages: write
       pull-requests: read
+    secrets: inherit
     with:
       cu: ${{ inputs.cu || 121 }}
       python_minor: ${{ inputs.python_minor || 11 }}

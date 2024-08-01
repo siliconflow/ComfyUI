@@ -42,7 +42,8 @@ jobs:
     runs-on: windows-latest
     steps:
         - if: ${{ inputs.cpu == true }}
-          run: echo "BIZY_VARIANT=cpu" >> $Env:GITHUB_ENV
+          shell: bash
+          run: echo "BIZY_VARIANT=cpu" >> $GITHUB_ENV
         - uses: actions/cache/restore@v4
           id: cache
           with:

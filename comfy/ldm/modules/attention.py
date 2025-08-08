@@ -632,8 +632,6 @@ class CrossAttention(nn.Module):
     def forward(self, x, context=None, value=None, mask=None):
         q = self.to_q(x)
         context = default(context, x)
-        if context.is_contiguous() is False:
-            context = context.contiguous()
         k = self.to_k(context)
         if value is not None:
             v = self.to_v(value)

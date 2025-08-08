@@ -17,12 +17,6 @@ import math
 import logging
 
 try:
-    import torch_musa
-    musa_available = torch_musa.is_available()
-except:
-    musa_available = False
-
-try:
     from typing import Optional, NamedTuple, List, Protocol
 except ImportError:
     from typing import Optional, NamedTuple, List
@@ -151,7 +145,7 @@ def _get_attention_scores_no_kv_chunking(
     mask,
 ) -> Tensor:
     if upcast_attention:
-        with torch.autocast(enabled=False, device_type = 'musa'):
+        with torch.autocast(enabled=False, device_type = 'cuda'):
             query = query.float()
             key_t = key_t.float()
             attn_scores = torch.baddbmm(

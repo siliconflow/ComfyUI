@@ -108,15 +108,9 @@ def model_to_mmap(model: torch.nn.Module):
     logging.debug(f"Converting model {model.__class__.__name__} to mmap, current free cpu memory: {free_cpu_mem/(1024*1024*1024)} GB")
     
     def convert_fn(t):
-        """Convert function for _apply()
-        
-        - For Parameters: modify .data and return the Parameter object
-        - For buffers (plain Tensors): return new MemoryMappedTensor
-        """
         if isinstance(t, QuantizedTensor):
-            logging.debug(f"QuantizedTensor detected, skipping mmap conversion, tensor meta info: size {t.size()}, dtype {t.dtype}, device {t.device}, is_contiguous {t.is_contiguous()}")
-            return t
-        elif isinstance(t, torch.nn.Parameter):
+            logging.debug(f"QuantizedTensor detected, tensor meta info: size {t.size()}, dtype {t.dtype}, device {t.device}, is_contiguous {t.is_contiguous()}")
+        if isinstance(t, torch.nn.Parameter):
             new_tensor = to_mmap(t.detach())
             return torch.nn.Parameter(new_tensor, requires_grad=t.requires_grad)
         elif isinstance(t, torch.Tensor):

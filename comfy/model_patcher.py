@@ -57,7 +57,7 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
     """
     # Create temporary file
     if filename is None:
-        temp_file = tempfile.mktemp(suffix='.pt', prefix='comfy_mmap_')
+        temp_file = tempfile.mkstemp(suffix='.pt', prefix='comfy_mmap_')[1]
     else:
         temp_file = filename
     
@@ -65,12 +65,10 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
     cpu_tensor = t.cpu()
     torch.save(cpu_tensor, temp_file)
     
-    # If we created a CPU copy from CUDA, delete it to free memory
-    if t.is_cuda:
+    # If we created a CPU copy from other device, delete it to free memory
+    if not t.device.type == 'cpu':
         del cpu_tensor
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
     
     # Load with mmap - this doesn't load all data into RAM
     mmap_tensor = torch.load(temp_file, map_location='cpu', mmap=True, weights_only=False)

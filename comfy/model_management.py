@@ -467,7 +467,7 @@ def module_size(module):
     sd = module.state_dict()
     for k in sd:
         t = sd[k]
-        module_mem += t.nelement() * t.element_size()
+        module_mem += t.nbytes
     return module_mem
 
 class LoadedModel:
@@ -1064,8 +1064,8 @@ NUM_STREAMS = 0
 if args.async_offload is not None:
     NUM_STREAMS = args.async_offload
 else:
-    #  Enable by default on Nvidia
-    if is_nvidia():
+    #  Enable by default on Nvidia and AMD
+    if is_nvidia() or is_amd():
         NUM_STREAMS = 2
 
 if args.disable_async_offload:
@@ -1171,6 +1171,16 @@ if not args.disable_pinned_memory:
 
 PINNING_ALLOWED_TYPES = set(["Parameter", "QuantizedTensor"])
 
+def discard_cuda_async_error():
+    try:
+        a = torch.tensor([1], dtype=torch.uint8, device=get_torch_device())
+        b = torch.tensor([1], dtype=torch.uint8, device=get_torch_device())
+        _ = a + b
+        torch.cuda.synchronize()
+    except torch.AcceleratorError:
+        #Dump it! We already know about it from the synchronous return
+        pass
+
 def pin_memory(tensor):
     global TOTAL_PINNED_MEMORY
     if MAX_PINNED_MEMORY <= 0:
@@ -1203,6 +1213,9 @@ def pin_memory(tensor):
         PINNED_MEMORY[ptr] = size
         TOTAL_PINNED_MEMORY += size
         return True
+    else:
+        logging.warning("Pin error.")
+        discard_cuda_async_error()
 
     return False
 
@@ -1231,6 +1244,9 @@ def unpin_memory(tensor):
         if len(PINNED_MEMORY) == 0:
             TOTAL_PINNED_MEMORY = 0
         return True
+    else:
+        logging.warning("Unpin error.")
+        discard_cuda_async_error()
 
     return False
 
@@ -1571,6 +1587,10 @@ def soft_empty_cache(force=False):
 def unload_all_models():
     free_memory(1e30, get_torch_device())
 
+def debug_memory_summary():
+    if is_amd() or is_nvidia():
+        return torch.cuda.memory.memory_summary()
+    return ""
 
 #TODO: might be cleaner to put this somewhere else
 import threading

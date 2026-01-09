@@ -22,7 +22,6 @@ from enum import Enum
 from comfy.cli_args import args, PerformanceFeature
 import torch
 import sys
-import importlib
 import platform
 import weakref
 import gc
@@ -360,10 +359,22 @@ try:
         except:
             rocm_version = (6, -1)
 
+        def aotriton_supported(gpu_arch):
+            path = torch.__path__[0]
+            path = os.path.join(os.path.join(path, "lib"), "aotriton.images")
+            gfx = set(map(lambda a: a[4:], filter(lambda a: a.startswith("amd-gfx"), os.listdir(path))))
+            if gpu_arch in gfx:
+                return True
+            if "{}x".format(gpu_arch[:-1]) in gfx:
+                return True
+            if "{}xx".format(gpu_arch[:-2]) in gfx:
+                return True
+            return False
+
         logging.info("AMD arch: {}".format(arch))
         logging.info("ROCm version: {}".format(rocm_version))
         if args.use_split_cross_attention == False and args.use_quad_cross_attention == False:
-            if importlib.util.find_spec('triton') is not None:  # AMD efficient attention implementation depends on triton. TODO: better way of detecting if it's compiled in or not.
+            if aotriton_supported(arch):  # AMD efficient attention implementation depends on aotriton.
                 if torch_version_numeric >= (2, 7):  # works on 2.6 but doesn't actually seem to improve much
                     if any((a in arch) for a in ["gfx90a", "gfx942", "gfx1100", "gfx1101", "gfx1151"]):  # TODO: more arches, TODO: gfx950
                         ENABLE_PYTORCH_ATTENTION = True
@@ -467,7 +478,7 @@ def module_size(module):
     sd = module.state_dict()
     for k in sd:
         t = sd[k]
-        module_mem += t.nelement() * t.element_size()
+        module_mem += t.nbytes
     return module_mem
 
 class LoadedModel:
@@ -1064,8 +1075,8 @@ NUM_STREAMS = 0
 if args.async_offload is not None:
     NUM_STREAMS = args.async_offload
 else:
-    #  Enable by default on Nvidia
-    if is_nvidia():
+    #  Enable by default on Nvidia and AMD
+    if is_nvidia() or is_amd():
         NUM_STREAMS = 2
 
 if args.disable_async_offload:
@@ -1171,6 +1182,16 @@ if not args.disable_pinned_memory:
 
 PINNING_ALLOWED_TYPES = set(["Parameter", "QuantizedTensor"])
 
+def discard_cuda_async_error():
+    try:
+        a = torch.tensor([1], dtype=torch.uint8, device=get_torch_device())
+        b = torch.tensor([1], dtype=torch.uint8, device=get_torch_device())
+        _ = a + b
+        torch.cuda.synchronize()
+    except torch.AcceleratorError:
+        #Dump it! We already know about it from the synchronous return
+        pass
+
 def pin_memory(tensor):
     global TOTAL_PINNED_MEMORY
     if MAX_PINNED_MEMORY <= 0:
@@ -1191,7 +1212,7 @@ def pin_memory(tensor):
     if not tensor.is_contiguous():
         return False
 
-    size = tensor.numel() * tensor.element_size()
+    size = tensor.nbytes
     if (TOTAL_PINNED_MEMORY + size) > MAX_PINNED_MEMORY:
         return False
 
@@ -1203,6 +1224,9 @@ def pin_memory(tensor):
         PINNED_MEMORY[ptr] = size
         TOTAL_PINNED_MEMORY += size
         return True
+    else:
+        logging.warning("Pin error.")
+        discard_cuda_async_error()
 
     return False
 
@@ -1215,7 +1239,7 @@ def unpin_memory(tensor):
         return False
 
     ptr = tensor.data_ptr()
-    size = tensor.numel() * tensor.element_size()
+    size = tensor.nbytes
 
     size_stored = PINNED_MEMORY.get(ptr, None)
     if size_stored is None:
@@ -1231,6 +1255,9 @@ def unpin_memory(tensor):
         if len(PINNED_MEMORY) == 0:
             TOTAL_PINNED_MEMORY = 0
         return True
+    else:
+        logging.warning("Unpin error.")
+        discard_cuda_async_error()
 
     return False
 
@@ -1533,6 +1560,16 @@ def supports_fp8_compute(device=None):
 
     return True
 
+def supports_nvfp4_compute(device=None):
+    if not is_nvidia():
+        return False
+
+    props = torch.cuda.get_device_properties(device)
+    if props.major < 10:
+        return False
+
+    return True
+
 def extended_fp16_support():
     # TODO: check why some models work with fp16 on newer torch versions but not on older
     if torch_version_numeric < (2, 7):
@@ -1571,6 +1608,10 @@ def soft_empty_cache(force=False):
 def unload_all_models():
     free_memory(1e30, get_torch_device())
 
+def debug_memory_summary():
+    if is_amd() or is_nvidia():
+        return torch.cuda.memory.memory_summary()
+    return ""
 
 #TODO: might be cleaner to put this somewhere else
 import threading

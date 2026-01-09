@@ -42,7 +42,6 @@ from comfy.comfy_types import UnetWrapperFunction
 from comfy.quant_ops import QuantizedTensor
 from comfy.patcher_extension import CallbacksMP, PatcherInjection, WrappersMP
 from comfy.model_management import get_free_memory, get_mmap_mem_threshold_gb, get_free_disk
-from comfy.quant_ops import QuantizedTensor
 
 def need_mmap() -> bool:
     free_cpu_mem = get_free_memory(torch.device("cpu"))
@@ -110,8 +109,9 @@ def model_to_mmap(model: torch.nn.Module):
     
     def convert_fn(t):
         if isinstance(t, QuantizedTensor):
-            logging.debug(f"QuantizedTensor detected, tensor meta info: size {t.size()}, dtype {t.dtype}, device {t.device}, is_contiguous {t.is_contiguous()}")
-        if isinstance(t, torch.nn.Parameter):
+            logging.debug(f"QuantizedTensor detected, mmap skipped, tensor meta info: size {t.size()}, dtype {t.dtype}, device {t.device}, is_contiguous {t.is_contiguous()}")
+            return t
+        elif isinstance(t, torch.nn.Parameter):
             new_tensor = to_mmap(t.detach())
             return torch.nn.Parameter(new_tensor, requires_grad=t.requires_grad)
         elif isinstance(t, torch.Tensor):

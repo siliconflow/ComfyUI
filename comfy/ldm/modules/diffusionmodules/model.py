@@ -14,10 +14,13 @@ if model_management.xformers_enabled_vae():
     import xformers.ops
 
 def torch_cat_if_needed(xl, dim):
+    xl = [x for x in xl if x is not None and x.shape[dim] > 0]
     if len(xl) > 1:
         return torch.cat(xl, dim)
-    else:
+    elif len(xl) == 1:
         return xl[0]
+    else:
+        return None
 
 def get_timestep_embedding(timesteps, embedding_dim):
     """
@@ -394,7 +397,8 @@ class Model(nn.Module):
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
                  resolution, use_timestep=True, use_linear_attn=False, attn_type="vanilla"):
         super().__init__()
-        if use_linear_attn: attn_type = "linear"
+        if use_linear_attn:
+            attn_type = "linear"
         self.ch = ch
         self.temb_ch = self.ch*4
         self.num_resolutions = len(ch_mult)
@@ -548,7 +552,8 @@ class Encoder(nn.Module):
                  conv3d=False, time_compress=None,
                  **ignore_kwargs):
         super().__init__()
-        if use_linear_attn: attn_type = "linear"
+        if use_linear_attn:
+            attn_type = "linear"
         self.ch = ch
         self.temb_ch = 0
         self.num_resolutions = len(ch_mult)

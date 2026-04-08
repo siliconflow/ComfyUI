@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing_extensions import override
 
 from comfy_api.latest import IO, ComfyExtension, Input
-from comfy_api_nodes.apis.bfl_api import (
+from comfy_api_nodes.apis.bfl import (
     BFLFluxExpandImageRequest,
     BFLFluxFillImageRequest,
     BFLFluxKontextProGenerateRequest,
@@ -57,6 +57,7 @@ class FluxProUltraImageNode(IO.ComfyNode):
                     tooltip="Whether to perform upsampling on the prompt. "
                     "If active, automatically modifies the prompt for more creative generation, "
                     "but results are nondeterministic (same seed will not produce exactly the same result).",
+                    advanced=True,
                 ),
                 IO.Int.Input(
                     "seed",
@@ -200,6 +201,7 @@ class FluxKontextProImageNode(IO.ComfyNode):
                     "prompt_upsampling",
                     default=False,
                     tooltip="Whether to perform upsampling on the prompt. If active, automatically modifies the prompt for more creative generation, but results are nondeterministic (same seed will not produce exactly the same result).",
+                    advanced=True,
                 ),
                 IO.Image.Input(
                     "input_image",
@@ -296,6 +298,7 @@ class FluxProExpandNode(IO.ComfyNode):
                     tooltip="Whether to perform upsampling on the prompt. "
                     "If active, automatically modifies the prompt for more creative generation, "
                     "but results are nondeterministic (same seed will not produce exactly the same result).",
+                    advanced=True,
                 ),
                 IO.Int.Input(
                     "top",
@@ -433,6 +436,7 @@ class FluxProFillNode(IO.ComfyNode):
                     tooltip="Whether to perform upsampling on the prompt. "
                     "If active, automatically modifies the prompt for more creative generation, "
                     "but results are nondeterministic (same seed will not produce exactly the same result).",
+                    advanced=True,
                 ),
                 IO.Float.Input(
                     "guidance",
@@ -577,6 +581,7 @@ class Flux2ProImageNode(IO.ComfyNode):
                     default=True,
                     tooltip="Whether to perform upsampling on the prompt. "
                     "If active, automatically modifies the prompt for more creative generation.",
+                    advanced=True,
                 ),
                 IO.Image.Input("images", optional=True, tooltip="Up to 9 images to be used as references."),
             ],

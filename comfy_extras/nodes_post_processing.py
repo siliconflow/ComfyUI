@@ -19,7 +19,9 @@ class Blend(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="ImageBlend",
+            display_name="Image Blend",
             category="image/postprocessing",
+            essentials_category="Image Tools",
             inputs=[
                 io.Image.Input("image1"),
                 io.Image.Input("image2"),
@@ -65,17 +67,18 @@ class Blend(io.ComfyNode):
     def g(cls, x):
         return torch.where(x <= 0.25, ((16 * x - 12) * x + 4) * x, torch.sqrt(x))
 
-def gaussian_kernel(kernel_size: int, sigma: float, device=None):
+def gaussian_kernel(kernel_size: int, sigma: float, device=None, dtype=torch.float32):
     x, y = torch.meshgrid(torch.linspace(-1, 1, kernel_size, device=device), torch.linspace(-1, 1, kernel_size, device=device), indexing="ij")
     d = torch.sqrt(x * x + y * y)
     g = torch.exp(-(d * d) / (2.0 * sigma * sigma))
-    return g / g.sum()
+    return (g / g.sum()).to(dtype)
 
 class Blur(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
             node_id="ImageBlur",
+            display_name="Image Blur",
             category="image/postprocessing",
             inputs=[
                 io.Image.Input("image"),
@@ -96,7 +99,7 @@ class Blur(io.ComfyNode):
         batch_size, height, width, channels = image.shape
 
         kernel_size = blur_radius * 2 + 1
-        kernel = gaussian_kernel(kernel_size, sigma, device=image.device).repeat(channels, 1, 1).unsqueeze(1)
+        kernel = gaussian_kernel(kernel_size, sigma, device=image.device, dtype=image.dtype).repeat(channels, 1, 1).unsqueeze(1)
 
         image = image.permute(0, 3, 1, 2) # Torch wants (B, C, H, W) we use (B, H, W, C)
         padded_image = F.pad(image, (blur_radius,blur_radius,blur_radius,blur_radius), 'reflect')
@@ -179,9 +182,9 @@ class Sharpen(io.ComfyNode):
             category="image/postprocessing",
             inputs=[
                 io.Image.Input("image"),
-                io.Int.Input("sharpen_radius", default=1, min=1, max=31, step=1),
-                io.Float.Input("sigma", default=1.0, min=0.1, max=10.0, step=0.01),
-                io.Float.Input("alpha", default=1.0, min=0.0, max=5.0, step=0.01),
+                io.Int.Input("sharpen_radius", default=1, min=1, max=31, step=1, advanced=True),
+                io.Float.Input("sigma", default=1.0, min=0.1, max=10.0, step=0.01, advanced=True),
+                io.Float.Input("alpha", default=1.0, min=0.0, max=5.0, step=0.01, advanced=True),
             ],
             outputs=[
                 io.Image.Output(),
@@ -197,7 +200,7 @@ class Sharpen(io.ComfyNode):
         image = image.to(comfy.model_management.get_torch_device())
 
         kernel_size = sharpen_radius * 2 + 1
-        kernel = gaussian_kernel(kernel_size, sigma, device=image.device) * -(alpha*10)
+        kernel = gaussian_kernel(kernel_size, sigma, device=image.device, dtype=image.dtype) * -(alpha*10)
         kernel = kernel.to(dtype=image.dtype)
         center = kernel_size // 2
         kernel[center, center] = kernel[center, center] - kernel.sum() + 1.0
@@ -225,7 +228,7 @@ class ImageScaleToTotalPixels(io.ComfyNode):
                 io.Image.Input("image"),
                 io.Combo.Input("upscale_method", options=cls.upscale_methods),
                 io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0, step=0.01),
-                io.Int.Input("resolution_steps", default=1, min=1, max=256),
+                io.Int.Input("resolution_steps", default=1, min=1, max=256, advanced=True),
             ],
             outputs=[
                 io.Image.Output(),
@@ -402,7 +405,6 @@ def scale_to_multiple_cover(input: torch.Tensor, multiple: int, scale_method: st
     return input[:, y0:y1, x0:x1]
 
 class ResizeImageMaskNode(io.ComfyNode):
-
     scale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
     crop_methods = ["disabled", "center"]
 
@@ -421,46 +423,62 @@ class ResizeImageMaskNode(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         template = io.MatchType.Template("input_type", [io.Image, io.Mask])
-        crop_combo = io.Combo.Input("crop", options=cls.crop_methods, default="center")
+        crop_combo = io.Combo.Input(
+            "crop",
+            options=cls.crop_methods,
+            default="center",
+            tooltip="How to handle aspect ratio mismatch: 'disabled' stretches to fit, 'center' crops to maintain aspect ratio.",
+        )
         return io.Schema(
             node_id="ResizeImageMaskNode",
             display_name="Resize Image/Mask",
+            description="Resize an image or mask using various scaling methods.",
             category="transform",
+            search_aliases=["resize", "resize image", "resize mask", "scale", "scale image", "scale mask", "image resize", "change size", "dimensions", "shrink", "enlarge"],
             inputs=[
                 io.MatchType.Input("input", template=template),
-                io.DynamicCombo.Input("resize_type", options=[
-                    io.DynamicCombo.Option(ResizeType.SCALE_BY, [
-                        io.Float.Input("multiplier", default=1.00, min=0.01, max=8.0, step=0.01),
+                io.DynamicCombo.Input(
+                    "resize_type",
+                    tooltip="Select how to resize: by exact dimensions, scale factor, matching another image, etc.",
+                    options=[
+                        io.DynamicCombo.Option(ResizeType.SCALE_DIMENSIONS, [
+                            io.Int.Input("width", default=512, min=0, max=MAX_RESOLUTION, step=1, tooltip="Target width in pixels. Set to 0 to auto-calculate from height while preserving aspect ratio."),
+                            io.Int.Input("height", default=512, min=0, max=MAX_RESOLUTION, step=1, tooltip="Target height in pixels. Set to 0 to auto-calculate from width while preserving aspect ratio."),
+                            crop_combo,
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_DIMENSIONS, [
-                        io.Int.Input("width", default=512, min=0, max=MAX_RESOLUTION, step=1),
-                        io.Int.Input("height", default=512, min=0, max=MAX_RESOLUTION, step=1),
-                        crop_combo,
+                        io.DynamicCombo.Option(ResizeType.SCALE_BY, [
+                            io.Float.Input("multiplier", default=1.00, min=0.01, max=8.0, step=0.01, tooltip="Scale factor (e.g., 2.0 doubles size, 0.5 halves size)."),
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_LONGER_DIMENSION, [
-                        io.Int.Input("longer_size", default=512, min=0, max=MAX_RESOLUTION, step=1),
+                        io.DynamicCombo.Option(ResizeType.SCALE_LONGER_DIMENSION, [
+                            io.Int.Input("longer_size", default=512, min=0, max=MAX_RESOLUTION, step=1, tooltip="The longer edge will be resized to this value. Aspect ratio is preserved."),
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_SHORTER_DIMENSION, [
-                        io.Int.Input("shorter_size", default=512, min=0, max=MAX_RESOLUTION, step=1),
+                        io.DynamicCombo.Option(ResizeType.SCALE_SHORTER_DIMENSION, [
+                            io.Int.Input("shorter_size", default=512, min=0, max=MAX_RESOLUTION, step=1, tooltip="The shorter edge will be resized to this value. Aspect ratio is preserved."),
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_WIDTH, [
-                        io.Int.Input("width", default=512, min=0, max=MAX_RESOLUTION, step=1),
+                        io.DynamicCombo.Option(ResizeType.SCALE_WIDTH, [
+                            io.Int.Input("width", default=512, min=0, max=MAX_RESOLUTION, step=1, tooltip="Target width in pixels. Height auto-adjusts to preserve aspect ratio."),
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_HEIGHT, [
-                        io.Int.Input("height", default=512, min=0, max=MAX_RESOLUTION, step=1),
+                        io.DynamicCombo.Option(ResizeType.SCALE_HEIGHT, [
+                            io.Int.Input("height", default=512, min=0, max=MAX_RESOLUTION, step=1, tooltip="Target height in pixels. Width auto-adjusts to preserve aspect ratio."),
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_TOTAL_PIXELS, [
-                        io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0, step=0.01),
+                        io.DynamicCombo.Option(ResizeType.SCALE_TOTAL_PIXELS, [
+                            io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0, step=0.01, tooltip="Target total megapixels (e.g., 1.0 ≈ 1024×1024). Aspect ratio is preserved."),
                         ]),
-                    io.DynamicCombo.Option(ResizeType.MATCH_SIZE, [
-                        io.MultiType.Input("match", [io.Image, io.Mask]),
-                        crop_combo,
+                        io.DynamicCombo.Option(ResizeType.MATCH_SIZE, [
+                            io.MultiType.Input("match", [io.Image, io.Mask], tooltip="Resize input to match the dimensions of this reference image or mask."),
+                            crop_combo,
                         ]),
-                    io.DynamicCombo.Option(ResizeType.SCALE_TO_MULTIPLE, [
-                        io.Int.Input("multiple", default=8, min=1, max=MAX_RESOLUTION, step=1),
+                        io.DynamicCombo.Option(ResizeType.SCALE_TO_MULTIPLE, [
+                            io.Int.Input("multiple", default=8, min=1, max=MAX_RESOLUTION, step=1, tooltip="Resize so width and height are divisible by this number. Useful for latent alignment (e.g., 8 or 64)."),
                         ]),
-                ]),
-                io.Combo.Input("scale_method", options=cls.scale_methods, default="area"),
+                    ],
+                ),
+                io.Combo.Input(
+                    "scale_method",
+                    options=cls.scale_methods,
+                    default="area",
+                    tooltip="Interpolation algorithm. 'area' is best for downscaling, 'lanczos' for upscaling, 'nearest-exact' for pixel art.",
+                ),
             ],
             outputs=[io.MatchType.Output(template=template, display_name="resized")]
         )
@@ -550,6 +568,8 @@ class BatchImagesNode(io.ComfyNode):
             node_id="BatchImagesNode",
             display_name="Batch Images",
             category="image",
+            essentials_category="Image Tools",
+            search_aliases=["batch", "image batch", "batch images", "combine images", "merge images", "stack images"],
             inputs=[
                 io.Autogrow.Input("images", template=autogrow_template)
             ],
@@ -568,6 +588,7 @@ class BatchMasksNode(io.ComfyNode):
         autogrow_template = io.Autogrow.TemplatePrefix(io.Mask.Input("mask"), prefix="mask", min=2, max=50)
         return io.Schema(
             node_id="BatchMasksNode",
+            search_aliases=["combine masks", "stack masks", "merge masks"],
             display_name="Batch Masks",
             category="mask",
             inputs=[
@@ -588,6 +609,7 @@ class BatchLatentsNode(io.ComfyNode):
         autogrow_template = io.Autogrow.TemplatePrefix(io.Latent.Input("latent"), prefix="latent", min=2, max=50)
         return io.Schema(
             node_id="BatchLatentsNode",
+            search_aliases=["combine latents", "stack latents", "merge latents"],
             display_name="Batch Latents",
             category="latent",
             inputs=[
@@ -611,6 +633,7 @@ class BatchImagesMasksLatentsNode(io.ComfyNode):
                 prefix="input", min=1, max=50)
         return io.Schema(
             node_id="BatchImagesMasksLatentsNode",
+            search_aliases=["combine batch", "merge batch", "stack inputs"],
             display_name="Batch Images/Masks/Latents",
             category="util",
             inputs=[
@@ -635,6 +658,7 @@ class BatchImagesMasksLatentsNode(io.ComfyNode):
         else:
             batched = batch_masks(values)
         return io.NodeOutput(batched)
+
 
 class PostProcessingExtension(ComfyExtension):
     @override

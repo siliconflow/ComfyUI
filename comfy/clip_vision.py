@@ -47,10 +47,10 @@ class ClipVisionModel():
         self.model = model_class(config, self.dtype, offload_device, comfy.ops.manual_cast)
         self.model.eval()
 
-        self.patcher = comfy.model_patcher.ModelPatcher(self.model, load_device=self.load_device, offload_device=offload_device)
+        self.patcher = comfy.model_patcher.CoreModelPatcher(self.model, load_device=self.load_device, offload_device=offload_device)
 
     def load_sd(self, sd):
-        return self.model.load_state_dict(sd, strict=False)
+        return self.model.load_state_dict(sd, strict=False, assign=self.patcher.is_dynamic())
 
     def get_sd(self):
         return self.model.state_dict()
@@ -66,6 +66,7 @@ class ClipVisionModel():
         outputs = Output()
         outputs["last_hidden_state"] = out[0].to(comfy.model_management.intermediate_device())
         outputs["image_embeds"] = out[2].to(comfy.model_management.intermediate_device())
+        outputs["image_sizes"] = [pixel_values.shape[1:]] * pixel_values.shape[0]
         if self.return_all_hidden_states:
             all_hs = out[1].to(comfy.model_management.intermediate_device())
             outputs["penultimate_hidden_states"] = all_hs[:, -2]

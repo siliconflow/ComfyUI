@@ -42,10 +42,10 @@ from comfy.quant_ops import QuantizedTensor
 from comfy.patcher_extension import CallbacksMP, PatcherInjection, WrappersMP
 from comfy.model_management import get_free_memory, get_mmap_mem_threshold_gb, get_free_disk
 
-def need_mmap() -> bool:
+def need_mmap(offload_size: int = 0) -> bool:
     free_cpu_mem = get_free_memory(torch.device("cpu"))
     mmap_mem_threshold_gb = get_mmap_mem_threshold_gb()
-    if free_cpu_mem < mmap_mem_threshold_gb * 1024 * 1024 * 1024:
+    if free_cpu_mem - offload_size < mmap_mem_threshold_gb * 1024 * 1024 * 1024:
         logging.debug(f"Enabling mmap, current free cpu memory {free_cpu_mem/(1024*1024*1024)} GB < {mmap_mem_threshold_gb} GB")
         return True
     return False
@@ -104,6 +104,14 @@ def model_to_mmap(model: torch.nn.Module):
         The same model with all tensors converted to memory-mapped format
     """
     free_cpu_mem = get_free_memory(torch.device("cpu"))
+    free_disk_mem = get_free_disk()
+    model_mem = comfy.model_management.module_size(model)
+    if model_mem > free_cpu_mem:
+        logging.error(f"Not enough free CPU memory to convert model to mmap. Model size: {model_mem/(1024*1024*1024)} GB, free CPU memory: {free_cpu_mem/(1024*1024*1024)} GB")
+        raise ValueError("Not enough free CPU memory to convert model to mmap")
+    if model_mem > free_disk_mem:
+        logging.error(f"Not enough free disk memory to convert model to mmap. Model size: {model_mem/(1024*1024*1024)} GB, free disk memory: {free_disk_mem/(1024*1024*1024)} GB")
+        raise ValueError("Not enough free disk memory to convert model to mmap")
     logging.debug(f"Converting model {model.__class__.__name__} to mmap, current free cpu memory: {free_cpu_mem/(1024*1024*1024)} GB")
     
     def convert_fn(t):
@@ -1022,9 +1030,12 @@ class ModelPatcher:
 
                 
             if device_to is not None:
-                if need_mmap():
+                if need_mmap(offload_size=self.model_size()):
                     # offload to mmap
-                    model_to_mmap(self.model)
+                    try:
+                        model_to_mmap(self.model)
+                    except Exception as e:
+                        pass # todo
                 else:
                     self.model.to(device_to)
                 self.model.device = device_to
@@ -1087,12 +1098,13 @@ class ModelPatcher:
                     bias_key = "{}.bias".format(n)
                     if move_weight:
                         cast_weight = self.force_cast_weights
-                        if need_mmap():
-                            if get_free_disk() < module_mem:
-                                logging.warning(f"Not enough disk space to offload {n} to mmap, current free disk space {get_free_disk()/(1024*1024*1024)} GB < {module_mem/(1024*1024*1024)} GB")
+                        if need_mmap(offload_size=module_mem):
+                            try:
+                                # offload to mmap
+                                model_to_mmap(m)
+                            except Exception as e:
+                                logging.error(f"Error occurred while offloading {n} to mmap: {e}")
                                 break
-                            # offload to mmap
-                            model_to_mmap(m)
                         else:
                             m.to(device_to)
                         module_mem += move_weight_functions(m, device_to)

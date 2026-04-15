@@ -1202,7 +1202,7 @@ class PromptQueue:
             self.server.queue_updated()
             self.not_empty.notify()
 
-    def get(self, timeout=None):
+    def get(self, timeout=None, worker_id=0):
         with self.not_empty:
             while len(self.queue) == 0:
                 self.not_empty.wait(timeout=timeout)
@@ -1210,7 +1210,8 @@ class PromptQueue:
                     return None
             item = heapq.heappop(self.queue)
             i = self.task_counter
-            self.currently_running[i] = copy.deepcopy(item)
+            # Store with worker_id to support multiple workers
+            self.currently_running[i] = {"worker_id": worker_id, "item": copy.deepcopy(item)}
             self.task_counter += 1
             self.server.queue_updated()
             return (item, i)
@@ -1223,7 +1224,12 @@ class PromptQueue:
     def task_done(self, item_id, history_result,
                   status: Optional['PromptQueue.ExecutionStatus'], process_item=None):
         with self.mutex:
-            prompt = self.currently_running.pop(item_id)
+            running_entry = self.currently_running.pop(item_id)
+            # Support both old format (direct item) and new format (dict with worker_id and item)
+            if isinstance(running_entry, dict) and "item" in running_entry:
+                prompt = running_entry["item"]
+            else:
+                prompt = running_entry
             if len(self.history) > MAXIMUM_HISTORY_SIZE:
                 self.history.pop(next(iter(self.history)))
 
@@ -1247,13 +1253,23 @@ class PromptQueue:
         with self.mutex:
             out = []
             for x in self.currently_running.values():
-                out += [x]
+                # Support both old format (direct item) and new format (dict with worker_id and item)
+                if isinstance(x, dict) and "item" in x:
+                    out += [x["item"]]
+                else:
+                    out += [x]
             return (out, copy.deepcopy(self.queue))
 
     # read-safe as long as queue items are immutable
     def get_current_queue_volatile(self):
         with self.mutex:
-            running = [x for x in self.currently_running.values()]
+            running = []
+            for x in self.currently_running.values():
+                # Support both old format (direct item) and new format (dict with worker_id and item)
+                if isinstance(x, dict) and "item" in x:
+                    running.append(x["item"])
+                else:
+                    running.append(x)
             queued = copy.copy(self.queue)
             return (running, queued)
 

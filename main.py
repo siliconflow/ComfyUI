@@ -273,7 +273,7 @@ def _collect_output_absolute_paths(history_result: dict) -> list[str]:
     return paths
 
 
-def prompt_worker(q, server_instance):
+def prompt_worker(q, server_instance, worker_id=0):
     current_time: float = 0.0
     cache_ram = args.cache_ram
     if cache_ram < 0:
@@ -297,7 +297,7 @@ def prompt_worker(q, server_instance):
         if need_gc:
             timeout = max(gc_collect_interval - (current_time - last_gc_collect), 0.0)
 
-        queue_item = q.get(timeout=timeout)
+        queue_item = q.get(timeout=timeout, worker_id=worker_id)
         if queue_item is not None:
             item, item_id = queue_item
             execution_start_time = time.perf_counter()
@@ -478,7 +478,13 @@ def start_comfyui(asyncio_loop=None):
     prompt_server.add_routes()
     hijack_progress(prompt_server)
 
-    threading.Thread(target=prompt_worker, daemon=True, args=(prompt_server.prompt_queue, prompt_server,)).start()
+    # Number of parallel workers - can be adjusted based on GPU memory and workload
+    # WARNING: Multiple workers will increase GPU memory usage significantly
+    NUM_WORKERS = int(os.environ.get("COMFYUI_NUM_WORKERS", "1"))
+    if NUM_WORKERS > 1:
+        logging.info(f"Starting {NUM_WORKERS} parallel prompt workers")
+    for worker_id in range(NUM_WORKERS):
+        threading.Thread(target=prompt_worker, daemon=True, args=(prompt_server.prompt_queue, prompt_server, worker_id)).start()
 
     if args.quick_test_for_ci:
         exit(0)

@@ -351,8 +351,8 @@ def get_progress_state(prompt_id: Optional[str] = None) -> ProgressRegistry:
             reg = _progress_registries.get(prompt_id)
             if reg is not None:
                 return reg
-    with _progress_registries_lock:
-        if _progress_registries:
-            return next(iter(_progress_registries.values()))
+    # with _progress_registries_lock:
+    #     if _progress_registries:
+    #         return next(iter(_progress_registries.values()))
     from comfy_execution.graph import DynamicPrompt
     return ProgressRegistry(prompt_id="", dynprompt=DynamicPrompt({}))

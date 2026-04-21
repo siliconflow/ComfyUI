@@ -321,8 +321,8 @@ def prompt_worker(q, server_instance):
                             status_str='success' if e.success else 'error',
                             completed=e.success,
                             messages=e.status_messages), process_item=remove_sensitive)
-            if server_instance.client_id is not None:
-                server_instance.send_sync("executing", {"node": None, "prompt_id": prompt_id}, server_instance.client_id)
+            if e.client_id is not None:
+                server_instance.send_sync("executing", {"node": None, "prompt_id": prompt_id}, e.client_id)
 
             current_time = time.perf_counter()
             execution_time = current_time - execution_start_time
@@ -380,26 +380,30 @@ def hijack_progress(server_instance):
             prompt_id = executing_context.prompt_id
         if node_id is None and executing_context is not None:
             node_id = executing_context.node_id
-        comfy.model_management.throw_exception_if_processing_interrupted()
         if prompt_id is None:
             prompt_id = server_instance.last_prompt_id
         if node_id is None:
             node_id = server_instance.last_node_id
-        progress = {"value": value, "max": total, "prompt_id": prompt_id, "node": node_id}
-        get_progress_state().update_progress(node_id, value, total, preview_image)
+        # Progress callbacks can run outside the main execute() stack, so re-check cancellation by prompt_id here.
+        comfy.model_management.throw_exception_if_processing_interrupted(prompt_id)
 
-        server_instance.send_sync("progress", progress, server_instance.client_id)
+        registry = get_progress_state(prompt_id)
+        client_id = registry.client_id if registry else None
+
+        progress = {"value": value, "max": total, "prompt_id": prompt_id, "node": node_id}
+        registry.update_progress(node_id, value, total, preview_image)
+
+        server_instance.send_sync("progress", progress, client_id)
         if preview_image is not None:
-            # Only send old method if client doesn't support preview metadata
-            if not feature_flags.supports_feature(
+            if client_id is None or not feature_flags.supports_feature(
                 server_instance.sockets_metadata,
-                server_instance.client_id,
+                client_id,
                 "supports_preview_metadata",
             ):
                 server_instance.send_sync(
                     BinaryEventTypes.UNENCODED_PREVIEW_IMAGE,
                     preview_image,
-                    server_instance.client_id,
+                    client_id,
                 )
 
     comfy.utils.set_progress_bar_global_hook(hook)
@@ -478,7 +482,10 @@ def start_comfyui(asyncio_loop=None):
     prompt_server.add_routes()
     hijack_progress(prompt_server)
 
-    threading.Thread(target=prompt_worker, daemon=True, args=(prompt_server.prompt_queue, prompt_server,)).start()
+    num_workers = max(1, args.parallel)
+    logging.info(f"Starting {num_workers} prompt worker(s)")
+    for i in range(num_workers):
+        threading.Thread(target=prompt_worker, daemon=True, args=(prompt_server.prompt_queue, prompt_server,), name=f"prompt_worker-{i}").start()
 
     if args.quick_test_for_ci:
         exit(0)

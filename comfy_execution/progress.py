@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import TypedDict, Dict, Optional, Tuple
 from typing_extensions import override
 from PIL import Image
@@ -152,9 +153,10 @@ class WebUIProgressHandler(ProgressHandler):
     Handler that sends progress updates to the WebUI via WebSockets.
     """
 
-    def __init__(self, server_instance):
+    def __init__(self, server_instance, client_id: Optional[str] = None):
         super().__init__("webui")
         self.server_instance = server_instance
+        self.client_id = client_id
 
     def set_registry(self, registry: "ProgressRegistry"):
         self.registry = registry
@@ -183,7 +185,7 @@ class WebUIProgressHandler(ProgressHandler):
         # Send a combined progress_state message with all node states
         # Include client_id to ensure message is only sent to the initiating client
         self.server_instance.send_sync(
-            "progress_state", {"prompt_id": prompt_id, "nodes": active_nodes}, self.server_instance.client_id
+            "progress_state", {"prompt_id": prompt_id, "nodes": active_nodes}, self.client_id
         )
 
     @override
@@ -206,10 +208,9 @@ class WebUIProgressHandler(ProgressHandler):
         if self.registry:
             self._send_progress_state(prompt_id, self.registry.nodes)
         if image:
-            # Only send new format if client supports it
-            if feature_flags.supports_feature(
+            if self.client_id is not None and feature_flags.supports_feature(
                 self.server_instance.sockets_metadata,
-                self.server_instance.client_id,
+                self.client_id,
                 "supports_preview_metadata",
             ):
                 metadata = {
@@ -226,7 +227,7 @@ class WebUIProgressHandler(ProgressHandler):
                 self.server_instance.send_sync(
                     BinaryEventTypes.PREVIEW_IMAGE_WITH_METADATA,
                     (image, metadata),
-                    self.server_instance.client_id,
+                    self.client_id,
                 )
 
     @override
@@ -240,9 +241,10 @@ class ProgressRegistry:
     Registry that maintains node progress state and notifies registered handlers.
     """
 
-    def __init__(self, prompt_id: str, dynprompt: "DynamicPrompt"):
+    def __init__(self, prompt_id: str, dynprompt: "DynamicPrompt", client_id: Optional[str] = None):
         self.prompt_id = prompt_id
         self.dynprompt = dynprompt
+        self.client_id = client_id
         self.nodes: Dict[str, NodeProgressState] = {}
         self.handlers: Dict[str, ProgressHandler] = {}
 
@@ -319,32 +321,38 @@ class ProgressRegistry:
         for handler in self.handlers.values():
             handler.reset()
 
-# Global registry instance
-global_progress_registry: ProgressRegistry | None = None
+# Per-prompt progress registries for parallel execution support
+_progress_registries: Dict[str, ProgressRegistry] = {}
+_progress_registries_lock = threading.Lock()
 
-def reset_progress_state(prompt_id: str, dynprompt: "DynamicPrompt") -> None:
-    global global_progress_registry
-
-    # Reset existing handlers if registry exists
-    if global_progress_registry is not None:
-        global_progress_registry.reset_handlers()
-
-    # Create new registry
-    global_progress_registry = ProgressRegistry(prompt_id, dynprompt)
+def reset_progress_state(prompt_id: str, dynprompt: "DynamicPrompt", client_id: Optional[str] = None) -> None:
+    with _progress_registries_lock:
+        if prompt_id in _progress_registries:
+            _progress_registries[prompt_id].reset_handlers()
+        _progress_registries[prompt_id] = ProgressRegistry(prompt_id, dynprompt, client_id=client_id)
 
 
-def add_progress_handler(handler: ProgressHandler) -> None:
-    registry = get_progress_state()
+def add_progress_handler(handler: ProgressHandler, prompt_id: Optional[str] = None) -> None:
+    registry = get_progress_state(prompt_id)
     handler.set_registry(registry)
     registry.register_handler(handler)
 
 
-def get_progress_state() -> ProgressRegistry:
-    global global_progress_registry
-    if global_progress_registry is None:
-        from comfy_execution.graph import DynamicPrompt
+def remove_progress_state(prompt_id: str) -> None:
+    with _progress_registries_lock:
+        reg = _progress_registries.pop(prompt_id, None)
+        if reg is not None:
+            reg.reset_handlers()
 
-        global_progress_registry = ProgressRegistry(
-            prompt_id="", dynprompt=DynamicPrompt({})
-        )
-    return global_progress_registry
+
+def get_progress_state(prompt_id: Optional[str] = None) -> ProgressRegistry:
+    if prompt_id is not None:
+        with _progress_registries_lock:
+            reg = _progress_registries.get(prompt_id)
+            if reg is not None:
+                return reg
+    # with _progress_registries_lock:
+    #     if _progress_registries:
+    #         return next(iter(_progress_registries.values()))
+    from comfy_execution.graph import DynamicPrompt
+    return ProgressRegistry(prompt_id="", dynprompt=DynamicPrompt({}))

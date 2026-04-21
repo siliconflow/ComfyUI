@@ -1003,13 +1003,16 @@ class PromptServer():
                         break
 
                 if should_interrupt:
-                    nodes.interrupt_processing()
+                    # Forward the target prompt_id so parallel workers only cancel the requested run.
+                    nodes.interrupt_processing(prompt_id=prompt_id)
                 else:
                     logging.info(f"Prompt {prompt_id} is not currently running, skipping interrupt")
             else:
-                # No prompt_id provided, do a global interrupt
-                logging.info("Global interrupt (no prompt_id specified)")
-                nodes.interrupt_processing()
+                # # No prompt_id provided, do a global interrupt
+                # logging.info("Global interrupt (no prompt_id specified)")
+                # nodes.interrupt_processing()
+                # 禁用全局中断，避免并行全局中断导致多个运行中的任务被意外中断
+                pass
 
             return web.Response(status=200)
 

@@ -51,6 +51,7 @@ class ComfyAPI_latest(ComfyAPIBase):
             Migration from previous API: comfy.utils.PROGRESS_BAR_HOOK
             """
             executing_context = get_executing_context()
+            prompt_id = executing_context.prompt_id if executing_context is not None else None
             if node_id is None and executing_context is not None:
                 node_id = executing_context.node_id
             if node_id is None:
@@ -78,7 +79,7 @@ class ComfyAPI_latest(ComfyAPIBase):
                     preview_size = None if ignore_size_limit else args.preview_size
                     to_display = (image_format, to_display, preview_size)
 
-            get_progress_state().update_progress(
+            get_progress_state(prompt_id).update_progress(
                 node_id=node_id,
                 value=value,
                 max_value=max_value,

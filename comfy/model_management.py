@@ -1807,22 +1807,86 @@ class InterruptProcessingException(Exception):
 interrupt_processing_mutex = threading.RLock()
 
 interrupt_processing = False
-def interrupt_current_processing(value=True):
-    global interrupt_processing
-    global interrupt_processing_mutex
-    with interrupt_processing_mutex:
-        interrupt_processing = value
+# Prompt-scoped interrupts prevent one worker from consuming another worker's cancel signal.
+interrupted_prompt_ids = set()
+active_prompt_ids = set()
 
-def processing_interrupted():
+
+def _resolve_interrupt_prompt_id(prompt_id=None):
+    if prompt_id is not None:
+        return prompt_id
+
+    try:
+        from comfy_execution.utils import get_executing_context
+        executing_context = get_executing_context()
+    except Exception:
+        executing_context = None
+
+    if executing_context is not None:
+        return executing_context.prompt_id
+    return None
+
+
+def register_active_prompt(prompt_id):
+    global active_prompt_ids
+    global interrupt_processing_mutex
+    with interrupt_processing_mutex:
+        # A restarted prompt_id should begin in a clean state.
+        active_prompt_ids.add(prompt_id)
+        interrupted_prompt_ids.discard(prompt_id)
+
+
+def unregister_active_prompt(prompt_id):
+    global active_prompt_ids
+    global interrupt_processing_mutex
+    with interrupt_processing_mutex:
+        active_prompt_ids.discard(prompt_id)
+        interrupted_prompt_ids.discard(prompt_id)
+
+
+def interrupt_current_processing(value=True, prompt_id=None):
     global interrupt_processing
     global interrupt_processing_mutex
     with interrupt_processing_mutex:
+        if prompt_id is None:
+            if value:
+                if active_prompt_ids:
+                    # Global interrupt fan-outs to every prompt that is currently running.
+                    interrupted_prompt_ids.update(active_prompt_ids)
+                    interrupt_processing = False
+                else:
+                    # Preserve the legacy global flag for code paths that still have no prompt context.
+                    interrupt_processing = True
+            else:
+                interrupt_processing = False
+                interrupted_prompt_ids.clear()
+            return
+
+        if value:
+            interrupted_prompt_ids.add(prompt_id)
+        else:
+            interrupted_prompt_ids.discard(prompt_id)
+
+
+def processing_interrupted(prompt_id=None):
+    global interrupt_processing
+    global interrupt_processing_mutex
+    resolved_prompt_id = _resolve_interrupt_prompt_id(prompt_id)
+    with interrupt_processing_mutex:
+        if resolved_prompt_id is not None:
+            return resolved_prompt_id in interrupted_prompt_ids
         return interrupt_processing
 
-def throw_exception_if_processing_interrupted():
+
+def throw_exception_if_processing_interrupted(prompt_id=None):
     global interrupt_processing
     global interrupt_processing_mutex
+    resolved_prompt_id = _resolve_interrupt_prompt_id(prompt_id)
     with interrupt_processing_mutex:
+        if resolved_prompt_id is not None:
+            if resolved_prompt_id in interrupted_prompt_ids:
+                raise InterruptProcessingException()
+            return
         if interrupt_processing:
             interrupt_processing = False
             raise InterruptProcessingException()

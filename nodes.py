@@ -51,8 +51,8 @@ if args.enable_manager:
 def before_node_execution():
     comfy.model_management.throw_exception_if_processing_interrupted()
 
-def interrupt_processing(value=True):
-    comfy.model_management.interrupt_current_processing(value)
+def interrupt_processing(value=True, prompt_id=None):
+    comfy.model_management.interrupt_current_processing(value, prompt_id=prompt_id)
 
 MAX_RESOLUTION=16384
 

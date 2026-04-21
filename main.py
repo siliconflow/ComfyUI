@@ -380,11 +380,12 @@ def hijack_progress(server_instance):
             prompt_id = executing_context.prompt_id
         if node_id is None and executing_context is not None:
             node_id = executing_context.node_id
-        comfy.model_management.throw_exception_if_processing_interrupted()
         if prompt_id is None:
             prompt_id = server_instance.last_prompt_id
         if node_id is None:
             node_id = server_instance.last_node_id
+        # Progress callbacks can run outside the main execute() stack, so re-check cancellation by prompt_id here.
+        comfy.model_management.throw_exception_if_processing_interrupted(prompt_id)
 
         registry = get_progress_state(prompt_id)
         client_id = registry.client_id if registry else None

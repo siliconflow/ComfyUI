@@ -713,8 +713,8 @@ class PromptExecutor:
 
     async def execute_async(self, prompt, prompt_id, extra_data={}, execute_outputs=[]):
         set_preview_method(extra_data.get("preview_method"))
-
-        nodes.interrupt_processing(False)
+        # Register before node execution starts so targeted/global interrupts can see this prompt immediately.
+        comfy.model_management.register_active_prompt(prompt_id)
 
         self.client_id = extra_data.get("client_id", None)
         self.server.client_id = self.client_id
@@ -809,6 +809,8 @@ class PromptExecutor:
             comfy.memory_management.set_ram_cache_release_state(None, 0)
             self._notify_prompt_lifecycle("end", prompt_id)
             remove_progress_state(prompt_id)
+            # Drop prompt-scoped interrupt state once this execution is fully finished.
+            comfy.model_management.unregister_active_prompt(prompt_id)
 
 
 async def validate_inputs(prompt_id, prompt, item, validated):

@@ -1003,7 +1003,8 @@ class PromptServer():
                         break
 
                 if should_interrupt:
-                    nodes.interrupt_processing()
+                    # Forward the target prompt_id so parallel workers only cancel the requested run.
+                    nodes.interrupt_processing(prompt_id=prompt_id)
                 else:
                     logging.info(f"Prompt {prompt_id} is not currently running, skipping interrupt")
             else:

@@ -991,26 +991,92 @@ class PromptServer():
             # Check if a specific prompt_id was provided for targeted interruption
             prompt_id = json_data.get('prompt_id')
             if prompt_id:
+                request_client_id = json_data.get('client_id')
+                if request_client_id is None:
+                    return web.json_response(
+                        {
+                            "error": {
+                                "type": "missing_client_id",
+                                "message": "client_id is required when interrupting a specific prompt",
+                                "details": "Provide the client_id that originally submitted the prompt",
+                                "extra_info": {"prompt_id": prompt_id},
+                            }
+                        },
+                        status=400,
+                    )
+
                 currently_running, _ = self.prompt_queue.get_current_queue()
 
                 # Check if the prompt_id matches any currently running prompt
-                should_interrupt = False
+                matching_item = None
                 for item in currently_running:
                     # item structure: (number, prompt_id, prompt, extra_data, outputs_to_execute)
                     if item[1] == prompt_id:
-                        logging.info(f"Interrupting prompt {prompt_id}")
-                        should_interrupt = True
+                        matching_item = item
                         break
 
-                if should_interrupt:
+                if matching_item is not None:
+                    prompt_client_id = matching_item[3].get('client_id')
+                    if prompt_client_id is None:
+                        return web.json_response(
+                            {
+                                "error": {
+                                    "type": "prompt_owner_unknown",
+                                    "message": "Cannot interrupt prompt because it has no recorded client_id owner",
+                                    "details": "Only prompts submitted with a client_id can be ownership-validated for interrupt",
+                                    "extra_info": {"prompt_id": prompt_id},
+                                }
+                            },
+                            status=403,
+                        )
+
+                    if prompt_client_id != request_client_id:
+                        logging.warning(
+                            f"Rejected interrupt for prompt {prompt_id}: requester client_id {request_client_id} does not own prompt"
+                        )
+                        return web.json_response(
+                            {
+                                "error": {
+                                    "type": "prompt_not_owned_by_client",
+                                    "message": "client_id does not own the target prompt",
+                                    "details": "Interrupt is only allowed for the client_id that originally submitted the prompt",
+                                    "extra_info": {
+                                        "prompt_id": prompt_id,
+                                        "client_id": request_client_id,
+                                    },
+                                }
+                            },
+                            status=403,
+                        )
+
+                    logging.info(f"Interrupting prompt {prompt_id} for client_id {request_client_id}")
                     # Forward the target prompt_id so parallel workers only cancel the requested run.
                     nodes.interrupt_processing(prompt_id=prompt_id)
                 else:
-                    logging.info(f"Prompt {prompt_id} is not currently running, skipping interrupt")
+                    return web.json_response(
+                        {
+                            "error": {
+                                "type": "prompt_not_running",
+                                "message": "Prompt is not currently running",
+                                "details": "Only actively running prompts can be interrupted",
+                                "extra_info": {"prompt_id": prompt_id},
+                            }
+                        },
+                        status=404,
+                    )
             else:
-                # No prompt_id provided, do a global interrupt
-                logging.info("Global interrupt (no prompt_id specified)")
-                nodes.interrupt_processing()
+                logging.warning("Rejected global interrupt without prompt_id")
+                return web.json_response(
+                    {
+                        "error": {
+                            "type": "global_interrupt_disabled",
+                            "message": "Global interrupt is disabled when ownership validation is enforced",
+                            "details": "Provide both prompt_id and the owning client_id to interrupt a workflow",
+                            "extra_info": {},
+                        }
+                    },
+                    status=403,
+                )
 
             return web.Response(status=200)
 

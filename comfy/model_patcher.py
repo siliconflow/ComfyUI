@@ -30,6 +30,7 @@ import os
 import tempfile
 import weakref
 import gc
+import mmap
 
 import comfy.float
 import comfy.hooks
@@ -56,21 +57,21 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
     """
     # Create temporary file
     if filename is None:
-        temp_file = tempfile.mkstemp(suffix='.pt', prefix='comfy_mmap_')[1]
+        temp_file = tempfile.mkstemp(suffix='.bin', prefix='comfy_mmap_')[1]
     else:
         temp_file = filename
     
-    # Save tensor to file
-    cpu_tensor = t.cpu()
-    torch.save(cpu_tensor, temp_file)
-    
-    # If we created a CPU copy from other device, delete it to free memory
-    if not t.device.type == 'cpu':
-        del cpu_tensor
-        gc.collect()
-    
-    # Load with mmap - this doesn't load all data into RAM
-    mmap_tensor = torch.load(temp_file, map_location='cpu', mmap=True, weights_only=False)
+    file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
+    file.save_storage(t.untyped_storage(), offset=0)
+    t_type = t.dtype
+    t_shape = t.shape
+    num = t.numel() * t.element_size()
+    del t
+    gc.collect()
+
+    fo = open(temp_file, "rb")
+    mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_READ)
+    mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
     
     # Register cleanup callback - will be called when tensor is garbage collected
     def _cleanup():
@@ -106,9 +107,6 @@ def model_to_mmap(model: torch.nn.Module):
     free_cpu_mem = get_free_memory(torch.device("cpu"))
     free_disk_mem = get_free_disk()
     model_mem = comfy.model_management.module_size(model)
-    if model_mem > free_cpu_mem:
-        logging.error(f"Not enough free CPU memory to convert model to mmap. Model size: {model_mem/(1024*1024*1024)} GB, free CPU memory: {free_cpu_mem/(1024*1024*1024)} GB")
-        raise ValueError("Not enough free CPU memory to convert model to mmap")
     if model_mem > free_disk_mem:
         logging.error(f"Not enough free disk memory to convert model to mmap. Model size: {model_mem/(1024*1024*1024)} GB, free disk memory: {free_disk_mem/(1024*1024*1024)} GB")
         raise ValueError("Not enough free disk memory to convert model to mmap")
@@ -1035,7 +1033,8 @@ class ModelPatcher:
                     try:
                         model_to_mmap(self.model)
                     except Exception as e:
-                        pass # todo
+                        logging.warning(f"Error occurred while offloading model to mmap: {e}")
+                        # todo: 回退 然后 partially_unload
                 else:
                     self.model.to(device_to)
                 self.model.device = device_to

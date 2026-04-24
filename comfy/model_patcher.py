@@ -1033,8 +1033,8 @@ class ModelPatcher:
                     try:
                         model_to_mmap(self.model)
                     except Exception as e:
-                        logging.warning(f"Error occurred while offloading model to mmap: {e}")
-                        # todo: 回退 然后 partially_unload
+                        logging.warning(f"Error occurred while offloading model to mmap: {e}, fall back to normal offload")
+                        self.model.to(device_to)
                 else:
                     self.model.to(device_to)
                 self.model.device = device_to
@@ -1102,8 +1102,8 @@ class ModelPatcher:
                                 # offload to mmap
                                 model_to_mmap(m)
                             except Exception as e:
-                                logging.error(f"Error occurred while offloading {n} to mmap: {e}")
-                                break
+                                logging.warning(f"Error occurred while offloading {n} to mmap: {e}, fall back to normal offload")
+                                m.to(device_to)
                         else:
                             m.to(device_to)
                         module_mem += move_weight_functions(m, device_to)

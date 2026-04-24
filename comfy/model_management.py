@@ -624,7 +624,7 @@ class LoadedModel:
         logging.debug(f"before unload, available_memory of offload device {self.model.offload_device}: {available_memory/(1024*1024*1024)} GB")
 
         mmap_mem_threshold = get_mmap_mem_threshold_gb() * 1024 * 1024 * 1024  # this is reserved memory for other system usage
-        if min(memory_to_free, model_loaded_size) > available_memory - mmap_mem_threshold or memory_to_free < model_loaded_size:
+        if memory_to_free < model_loaded_size:
             partially_unload = True
         else:
             partially_unload = False

@@ -43,6 +43,8 @@ from comfy.quant_ops import QuantizedTensor
 from comfy.patcher_extension import CallbacksMP, PatcherInjection, WrappersMP
 from comfy.model_management import get_free_memory, get_mmap_mem_threshold_gb, get_free_disk
 
+_CUDA_GDS_AVAILABLE = hasattr(torch, "cuda") and hasattr(torch.cuda, "gds") and hasattr(torch.cuda.gds, "GdsFile")
+
 def need_mmap(offload_size: int = 0) -> bool:
     free_cpu_mem = get_free_memory(torch.device("cpu"))
     mmap_mem_threshold_gb = get_mmap_mem_threshold_gb()
@@ -61,17 +63,29 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
     else:
         temp_file = filename
     
-    file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
-    file.save_storage(t.untyped_storage(), offset=0)
-    t_type = t.dtype
-    t_shape = t.shape
-    num = t.numel() * t.element_size()
-    del t
-    gc.collect()
+    if _CUDA_GDS_AVAILABLE:
+        file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
+        file.save_storage(t.untyped_storage(), offset=0)
+        t_type = t.dtype
+        t_shape = t.shape
+        num = t.numel() * t.element_size()
+        del t
+        gc.collect()
 
-    fo = open(temp_file, "rb")
-    mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_READ)
-    mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
+        with open(temp_file, "rb") as fo:
+            mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_READ)
+            mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
+    else:
+        cpu_tensor = t.cpu()
+        torch.save(cpu_tensor, temp_file)
+    
+        # If we created a CPU copy from other device, delete it to free memory
+        if not t.device.type == 'cpu':
+            del cpu_tensor
+            gc.collect()
+        
+        # Load with mmap - this doesn't load all data into RAM
+        mmap_tensor = torch.load(temp_file, map_location='cpu', mmap=True, weights_only=False)
     
     # Register cleanup callback - will be called when tensor is garbage collected
     def _cleanup():

@@ -76,11 +76,13 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
         t_shape = t.shape
         num = t.numel() * t.element_size()
         del t
+        del file
         gc.collect()
 
         with open(temp_file, "rb") as fo:
             mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_READ)
             mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
+            mmap_tensor._mmap = mm
     else:
         cpu_tensor = t.cpu()
         torch.save(cpu_tensor, temp_file)
@@ -99,6 +101,8 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
                 logging.debug(f"Cleaned up mmap file: {temp_file}")
+            if hasattr(mmap_tensor, "_mmap"):
+                mmap_tensor._mmap.close()
         except Exception:
             pass
     

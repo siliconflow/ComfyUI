@@ -48,6 +48,7 @@ from comfy.quant_ops import QuantizedTensor
 from comfy.patcher_extension import CallbacksMP, PatcherInjection, WrappersMP
 from comfy.model_management import get_free_memory, get_mmap_mem_threshold_gb, get_free_disk
 
+_USE_GDS_OFFLOAD = bool(os.environ.get("USE_GDS_OFFLOAD", "False").lower() in ("true", "1", "yes"))
 _CUDA_GDS_AVAILABLE = hasattr(torch, "cuda") and hasattr(torch.cuda, "gds") and hasattr(torch.cuda.gds, "GdsFile")
 
 def need_mmap(offload_size: int = 0) -> bool:
@@ -68,7 +69,7 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
     else:
         temp_file = filename
     
-    if _CUDA_GDS_AVAILABLE:
+    if _USE_GDS_OFFLOAD and _CUDA_GDS_AVAILABLE:
         file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
         file.save_storage(t.untyped_storage(), offset=0)
         t_type = t.dtype

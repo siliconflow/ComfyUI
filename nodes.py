@@ -2311,6 +2311,7 @@ async def init_external_custom_nodes():
     node_import_times = []
     for custom_node_path in node_paths:
         possible_modules = sorted(os.listdir(os.path.realpath(custom_node_path)))
+        print("!!!possible_modules2!!!:\n" + "\n".join(possible_modules))
         if "__pycache__" in possible_modules:
             possible_modules.remove("__pycache__")
 

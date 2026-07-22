@@ -176,6 +176,11 @@ def execute_prestartup_script():
         return False
 
     node_paths = folder_paths.get_folder_paths("custom_nodes")
+    # Track the real visit order of custom nodes during prestartup (independent of timing).
+    # Each entry: (order_index, module_path, status) where status is one of
+    # EXECUTED / PRESTARTUP FAILED / BLOCKED / SKIPPED / NO SCRIPT / SKIPPED FILE.
+    # os.listdir() ordering is filesystem-dependent; this prints the actual sequence.
+    prestartup_order_log = []
     for custom_node_path in node_paths:
         possible_modules = os.listdir(custom_node_path)
         node_prestartup_times = []
@@ -183,29 +188,48 @@ def execute_prestartup_script():
         for possible_module in possible_modules:
             module_path = os.path.join(custom_node_path, possible_module)
 
+            order_index = len(prestartup_order_log) + 1
+
             if args.enable_manager:
                 if comfyui_manager.should_be_disabled(module_path):
+                    prestartup_order_log.append((order_index, module_path, "BLOCKED"))
                     continue
 
             if os.path.isfile(module_path) or module_path.endswith(".disabled") or module_path == "__pycache__":
+                prestartup_order_log.append((order_index, module_path, "SKIPPED FILE"))
                 continue
 
             script_path = os.path.join(module_path, "prestartup_script.py")
-            if os.path.exists(script_path):
-                if args.disable_all_custom_nodes and possible_module not in args.whitelist_custom_nodes:
-                    logging.info(f"Prestartup Skipping {possible_module} due to disable_all_custom_nodes and whitelist_custom_nodes")
-                    continue
-                time_before = time.perf_counter()
-                success = execute_script(script_path)
-                node_prestartup_times.append((time.perf_counter() - time_before, module_path, success))
-    if len(node_prestartup_times) > 0:
-        logging.info("\nPrestartup times for custom nodes:")
-        for n in sorted(node_prestartup_times):
-            if n[2]:
-                import_message = ""
-            else:
-                import_message = " (PRESTARTUP FAILED)"
-            logging.info("{:6.1f} seconds{}: {}".format(n[0], import_message, n[1]))
+            if not os.path.exists(script_path):
+                prestartup_order_log.append((order_index, module_path, "NO SCRIPT"))
+                continue
+
+            if args.disable_all_custom_nodes and possible_module not in args.whitelist_custom_nodes:
+                logging.info(f"Prestartup Skipping {possible_module} due to disable_all_custom_nodes and whitelist_custom_nodes")
+                prestartup_order_log.append((order_index, module_path, "SKIPPED"))
+                continue
+
+            time_before = time.perf_counter()
+            success = execute_script(script_path)
+            node_prestartup_times.append((time.perf_counter() - time_before, module_path, success))
+            prestartup_order_log.append((order_index, module_path, "EXECUTED" if success else "PRESTARTUP FAILED"))
+
+        if len(node_prestartup_times) > 0:
+            logging.info("\nPrestartup times for custom nodes:")
+            for n in sorted(node_prestartup_times):
+                if n[2]:
+                    import_message = ""
+                else:
+                    import_message = " (PRESTARTUP FAILED)"
+                logging.info("{:6.1f} seconds{}: {}".format(n[0], import_message, n[1]))
+            logging.info("")
+
+    # Print the ACTUAL prestartup visit order: the real sequence in which custom nodes
+    # were visited, regardless of whether they have a prestartup_script.py.
+    if prestartup_order_log:
+        logging.info("\nActual prestartup load order for custom nodes (real visit sequence, not time-sorted):")
+        for order_index, module_path, status in prestartup_order_log:
+            logging.info("  #{:<3} {:<18} {}".format(order_index, status, module_path))
         logging.info("")
 
 apply_custom_paths()

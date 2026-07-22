@@ -2335,6 +2335,12 @@ async def init_external_custom_nodes():
     base_node_names = set(NODE_CLASS_MAPPINGS.keys())
     node_paths = folder_paths.get_folder_paths("custom_nodes")
     node_import_times = []
+    # Track the real load order of attempted custom node loads (independent of import timing).
+    # Each entry: (order_index, module_path, status) where status is one of
+    # LOADED / IMPORT FAILED / SKIPPED / BLOCKED. This lets us print the order in which
+    # custom nodes were actually visited, because os.listdir() ordering is filesystem-dependent
+    # and the original "Import times" log is sorted by elapsed time.
+    load_order_log = []
     for custom_node_path in node_paths:
         possible_modules = os.listdir(os.path.realpath(custom_node_path))
         if "__pycache__" in possible_modules:
@@ -2346,18 +2352,25 @@ async def init_external_custom_nodes():
                 continue
             if module_path.endswith(".disabled"):
                 continue
+
+            order_index = len(load_order_log) + 1
+
             if args.disable_all_custom_nodes and possible_module not in args.whitelist_custom_nodes:
                 logging.info(f"Skipping {possible_module} due to disable_all_custom_nodes and whitelist_custom_nodes")
+                load_order_log.append((order_index, module_path, "SKIPPED"))
                 continue
 
             if args.enable_manager:
                 if comfyui_manager.should_be_disabled(module_path):
                     logging.info(f"Blocked by policy: {module_path}")
+                    load_order_log.append((order_index, module_path, "BLOCKED"))
                     continue
 
             time_before = time.perf_counter()
             success = await load_custom_node(module_path, base_node_names, module_parent="custom_nodes")
-            node_import_times.append((time.perf_counter() - time_before, module_path, success))
+            elapsed = time.perf_counter() - time_before
+            node_import_times.append((elapsed, module_path, success))
+            load_order_log.append((order_index, module_path, "LOADED" if success else "IMPORT FAILED"))
 
     if len(node_import_times) > 0:
         logging.info("\nImport times for custom nodes:")
@@ -2367,6 +2380,14 @@ async def init_external_custom_nodes():
             else:
                 import_message = " (IMPORT FAILED)"
             logging.info("{:6.1f} seconds{}: {}".format(n[0], import_message, n[1]))
+        logging.info("")
+
+    # Print the ACTUAL load order: the real sequence in which custom nodes were attempted.
+    # This is NOT sorted by time; it reflects the actual os.listdir() + loop order.
+    if load_order_log:
+        logging.info("\nActual load order for custom nodes (real attempt sequence, not time-sorted):")
+        for order_index, module_path, status in load_order_log:
+            logging.info("  #{:<3} {:<14} {}".format(order_index, status, module_path))
         logging.info("")
 
 async def init_builtin_extra_nodes():

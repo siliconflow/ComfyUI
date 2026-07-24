@@ -65,11 +65,19 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
     """
     # Create temporary file
     if filename is None:
-        temp_file = tempfile.mkstemp(suffix='.bin', prefix='comfy_mmap_')[1]
+        fd, temp_file = tempfile.mkstemp(suffix='.bin', prefix='comfy_mmap_')
+        os.close(fd)
     else:
         temp_file = filename
     
-    if _USE_GDS_OFFLOAD and _CUDA_GDS_AVAILABLE:
+    use_gds = (
+        _USE_GDS_OFFLOAD
+        and _CUDA_GDS_AVAILABLE
+        and t.is_contiguous()
+        and t.storage_offset() == 0
+        and t.untyped_storage().nbytes() == t.numel() * t.element_size()
+    )
+    if use_gds:
         file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
         file.save_storage(t.untyped_storage(), offset=0)
         t_type = t.dtype
@@ -96,17 +104,18 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
         mmap_tensor = torch.load(temp_file, map_location='cpu', mmap=True, weights_only=False)
     
     # Register cleanup callback - will be called when tensor is garbage collected
-    def _cleanup():
+    def _cleanup(temp_file, mmap_file):
         try:
+            if mmap_file is not None:
+                mmap_file.close()
             if os.path.exists(temp_file):
                 os.remove(temp_file)
                 logging.debug(f"Cleaned up mmap file: {temp_file}")
-            if hasattr(mmap_tensor, "_mmap"):
-                mmap_tensor._mmap.close()
         except Exception:
             pass
     
-    weakref.finalize(mmap_tensor, _cleanup)
+    mmap_file = getattr(mmap_tensor, "_mmap", None)
+    weakref.finalize(mmap_tensor, _cleanup, temp_file, mmap_file)
 
     return mmap_tensor
                 

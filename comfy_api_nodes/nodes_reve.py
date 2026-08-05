@@ -62,13 +62,6 @@ def _postprocessing_inputs():
     ]
 
 
-def _reve_price_extractor(headers: dict) -> float | None:
-    credits_used = headers.get("x-reve-credits-used")
-    if credits_used is not None:
-        return float(credits_used) / 524.48
-    return None
-
-
 def _reve_response_header_validator(headers: dict) -> None:
     error_code = headers.get("x-reve-error-code")
     if error_code:
@@ -109,7 +102,7 @@ class ReveImageCreateNode(IO.ComfyNode):
         return IO.Schema(
             node_id="ReveImageCreateNode",
             display_name="Reve Image Create",
-            category="api node/image/Reve",
+            category="partner/image/Reve",
             description="Generate images from text descriptions using Reve.",
             inputs=[
                 IO.String.Input(
@@ -145,7 +138,20 @@ class ReveImageCreateNode(IO.ComfyNode):
             ],
             is_api_node=True,
             price_badge=IO.PriceBadge(
-                expr="""{"type":"usd","usd":0.03432,"format":{"approximate":true,"note":"(base)"}}""",
+                depends_on=IO.PriceBadgeDepends(
+                    widgets=["upscale", "upscale.upscale_factor"],
+                ),
+                expr="""
+                (
+                    $factor := $lookup(widgets, "upscale.upscale_factor");
+                    $fmt := {"approximate": true, "note": "(base)"};
+                    widgets.upscale = "enabled" ? (
+                        $factor = 4 ? {"type": "usd", "usd": 0.0762, "format": $fmt}
+                        : $factor = 3 ? {"type": "usd", "usd": 0.0591, "format": $fmt}
+                        : {"type": "usd", "usd": 0.0457, "format": $fmt}
+                    ) : {"type": "usd", "usd": 0.03432, "format": $fmt}
+                )
+                """,
             ),
         )
 
@@ -167,7 +173,6 @@ class ReveImageCreateNode(IO.ComfyNode):
                 headers={"Accept": "image/webp"},
             ),
             as_binary=True,
-            price_extractor=_reve_price_extractor,
             response_header_validator=_reve_response_header_validator,
             data=ReveImageCreateRequest(
                 prompt=prompt,
@@ -187,7 +192,7 @@ class ReveImageEditNode(IO.ComfyNode):
         return IO.Schema(
             node_id="ReveImageEditNode",
             display_name="Reve Image Edit",
-            category="api node/image/Reve",
+            category="partner/image/Reve",
             description="Edit images using natural language instructions with Reve.",
             inputs=[
                 IO.Image.Input("image", tooltip="The image to edit."),
@@ -225,13 +230,21 @@ class ReveImageEditNode(IO.ComfyNode):
             is_api_node=True,
             price_badge=IO.PriceBadge(
                 depends_on=IO.PriceBadgeDepends(
-                    widgets=["model"],
+                    widgets=["model", "upscale", "upscale.upscale_factor"],
                 ),
                 expr="""
                 (
+                    $fmt := {"approximate": true, "note": "(base)"};
                     $isFast := $contains(widgets.model, "fast");
-                    $base := $isFast ? 0.01001 : 0.0572;
-                    {"type": "usd", "usd": $base, "format": {"approximate": true, "note": "(base)"}}
+                    $enabled := widgets.upscale = "enabled";
+                    $factor := $lookup(widgets, "upscale.upscale_factor");
+                    $isFast
+                        ? {"type": "usd", "usd": 0.01001, "format": $fmt}
+                        : $enabled ? (
+                            $factor = 4 ? {"type": "usd", "usd": 0.0991, "format": $fmt}
+                            : $factor = 3 ? {"type": "usd", "usd": 0.0819, "format": $fmt}
+                            : {"type": "usd", "usd": 0.0686, "format": $fmt}
+                        ) : {"type": "usd", "usd": 0.0572, "format": $fmt}
                 )
                 """,
             ),
@@ -258,7 +271,6 @@ class ReveImageEditNode(IO.ComfyNode):
                 headers={"Accept": "image/webp"},
             ),
             as_binary=True,
-            price_extractor=_reve_price_extractor,
             response_header_validator=_reve_response_header_validator,
             data=ReveImageEditRequest(
                 edit_instruction=edit_instruction,
@@ -279,7 +291,7 @@ class ReveImageRemixNode(IO.ComfyNode):
         return IO.Schema(
             node_id="ReveImageRemixNode",
             display_name="Reve Image Remix",
-            category="api node/image/Reve",
+            category="partner/image/Reve",
             description="Combine reference images with text prompts to create new images using Reve.",
             inputs=[
                 IO.Autogrow.Input(
@@ -327,13 +339,21 @@ class ReveImageRemixNode(IO.ComfyNode):
             is_api_node=True,
             price_badge=IO.PriceBadge(
                 depends_on=IO.PriceBadgeDepends(
-                    widgets=["model"],
+                    widgets=["model", "upscale", "upscale.upscale_factor"],
                 ),
                 expr="""
                 (
+                    $fmt := {"approximate": true, "note": "(base)"};
                     $isFast := $contains(widgets.model, "fast");
-                    $base := $isFast ? 0.01001 : 0.0572;
-                    {"type": "usd", "usd": $base, "format": {"approximate": true, "note": "(base)"}}
+                    $enabled := widgets.upscale = "enabled";
+                    $factor := $lookup(widgets, "upscale.upscale_factor");
+                    $isFast
+                        ? {"type": "usd", "usd": 0.01001, "format": $fmt}
+                        : $enabled ? (
+                            $factor = 4 ? {"type": "usd", "usd": 0.0991, "format": $fmt}
+                            : $factor = 3 ? {"type": "usd", "usd": 0.0819, "format": $fmt}
+                            : {"type": "usd", "usd": 0.0686, "format": $fmt}
+                        ) : {"type": "usd", "usd": 0.0572, "format": $fmt}
                 )
                 """,
             ),
@@ -367,7 +387,6 @@ class ReveImageRemixNode(IO.ComfyNode):
                 headers={"Accept": "image/webp"},
             ),
             as_binary=True,
-            price_extractor=_reve_price_extractor,
             response_header_validator=_reve_response_header_validator,
             data=ReveImageRemixRequest(
                 prompt=prompt,

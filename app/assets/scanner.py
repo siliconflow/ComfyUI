@@ -13,6 +13,7 @@ from app.assets.database.queries import (
     delete_references_by_ids,
     ensure_tags_exist,
     get_asset_by_hash,
+    get_reference_by_id,
     get_references_for_prefixes,
     get_unenriched_references,
     mark_references_missing_outside_prefixes,
@@ -32,9 +33,10 @@ from app.assets.services.file_utils import (
     verify_file_unchanged,
 )
 from app.assets.services.hashing import HashCheckpoint, compute_blake3_hash
+from app.assets.services.image_dimensions import extract_image_dimensions
 from app.assets.services.metadata_extract import extract_file_metadata
 from app.assets.services.path_utils import (
-    compute_relative_filename,
+    compute_loader_path,
     get_comfy_models_folders,
     get_name_and_tags_from_asset_path,
 )
@@ -61,7 +63,7 @@ RootType = Literal["models", "input", "output"]
 def get_prefixes_for_root(root: RootType) -> list[str]:
     if root == "models":
         bases: list[str] = []
-        for _bucket, paths in get_comfy_models_folders():
+        for _bucket, paths, _exts in get_comfy_models_folders():
             bases.extend(paths)
         return [os.path.abspath(p) for p in bases]
     if root == "input":
@@ -79,7 +81,7 @@ def get_all_known_prefixes() -> list[str]:
 
 def collect_models_files() -> list[str]:
     out: list[str] = []
-    for folder_name, bases in get_comfy_models_folders():
+    for folder_name, bases, _exts in get_comfy_models_folders():
         rel_files = folder_paths.get_filename_list(folder_name) or []
         for rel_path in rel_files:
             if not all(is_visible(part) for part in Path(rel_path).parts):
@@ -306,7 +308,7 @@ def build_asset_specs(
         if not stat_p.st_size:
             continue
         name, tags = get_name_and_tags_from_asset_path(abs_p)
-        rel_fname = compute_relative_filename(abs_p)
+        rel_fname = compute_loader_path(abs_p)
 
         # Extract metadata (tier 1: filesystem, tier 2: safetensors header)
         metadata = None
@@ -338,6 +340,7 @@ def build_asset_specs(
                 "metadata": metadata,
                 "hash": asset_hash,
                 "mime_type": mime_type,
+                "job_id": None,
             }
         )
         tag_pool.update(tags)
@@ -352,7 +355,7 @@ def insert_asset_specs(specs: list[SeedAssetSpec], tag_pool: set[str]) -> int:
         return 0
     with create_session() as sess:
         if tag_pool:
-            ensure_tags_exist(sess, tag_pool, tag_type="user")
+            ensure_tags_exist(sess, tag_pool)
         result = batch_insert_seed_assets(sess, specs=specs, owner_id="")
         sess.commit()
         return result.inserted_refs
@@ -426,7 +429,8 @@ def enrich_asset(
     except OSError:
         return new_level
 
-    rel_fname = compute_relative_filename(file_path)
+    initial_mtime_ns = get_mtime_ns(stat_p)
+    rel_fname = compute_loader_path(file_path)
     mime_type: str | None = None
     metadata = None
 
@@ -489,8 +493,24 @@ def enrich_asset(
         except Exception as e:
             logging.warning("Failed to hash %s: %s", file_path, e)
 
+    # Optimistic guard: if the reference's mtime_ns changed since we
+    # started (e.g. ingest_existing_file updated it), our results are
+    # stale — discard them to avoid overwriting fresh registration data.
+    ref = get_reference_by_id(session, reference_id)
+    if ref is None or ref.mtime_ns != initial_mtime_ns:
+        session.rollback()
+        logging.info(
+            "Ref %s mtime changed during enrichment, discarding stale result",
+            reference_id,
+        )
+        return ENRICHMENT_STUB
+
     if extract_metadata and metadata:
         system_metadata = metadata.to_user_metadata()
+        if mime_type and mime_type.startswith("image/"):
+            dims = extract_image_dimensions(file_path, mime_type=mime_type)
+            if dims:
+                system_metadata.update(dims)
         set_reference_system_metadata(session, reference_id, system_metadata)
 
     if full_hash:

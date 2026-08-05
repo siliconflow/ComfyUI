@@ -37,6 +37,7 @@ class SeedAssetSpec(TypedDict):
     metadata: ExtractedMetadata | None
     hash: str | None
     mime_type: str | None
+    job_id: str | None
 
 
 class AssetRow(TypedDict):
@@ -55,11 +56,13 @@ class ReferenceRow(TypedDict):
     id: str
     asset_id: str
     file_path: str
+    loader_path: str | None
     mtime_ns: int
     owner_id: str
     name: str
     preview_id: str | None
     user_metadata: dict[str, Any] | None
+    job_id: str | None
     created_at: datetime
     updated_at: datetime
     last_access_time: datetime
@@ -132,6 +135,14 @@ def batch_insert_seed_assets(
 
     for spec in specs:
         absolute_path = os.path.abspath(spec["abs_path"])
+        existing_asset_id = path_to_asset_id.get(absolute_path)
+        if existing_asset_id is not None:
+            existing_tags = asset_id_to_ref_data[existing_asset_id]["tags"]
+            asset_id_to_ref_data[existing_asset_id]["tags"] = list(
+                dict.fromkeys([*existing_tags, *spec["tags"]])
+            )
+            continue
+
         asset_id = str(uuid.uuid4())
         reference_id = str(uuid.uuid4())
         absolute_path_list.append(absolute_path)
@@ -162,11 +173,14 @@ def batch_insert_seed_assets(
                 "id": reference_id,
                 "asset_id": asset_id,
                 "file_path": absolute_path,
+                # spec["fname"] is compute_loader_path(abs_path) from build_asset_specs.
+                "loader_path": spec["fname"],
                 "mtime_ns": spec["mtime_ns"],
                 "owner_id": owner_id,
                 "name": spec["info_name"],
                 "preview_id": None,
                 "user_metadata": user_metadata,
+                "job_id": spec.get("job_id"),
                 "created_at": current_time,
                 "updated_at": current_time,
                 "last_access_time": current_time,

@@ -9,25 +9,33 @@ from sqlalchemy.orm import Session
 import app.assets.services.hashing as hashing
 from app.assets.database.queries import (
     add_tags_to_reference,
+    count_active_siblings,
+    create_stub_asset,
+    ensure_tags_exist,
     fetch_reference_and_asset,
     get_asset_by_hash,
     get_reference_by_file_path,
     get_reference_tags,
     get_or_create_reference,
+    list_references_by_asset_id,
     reference_exists,
     remove_missing_tag_for_asset_id,
     set_reference_metadata,
+    set_reference_system_metadata,
     set_reference_tags,
     update_asset_hash_and_mime,
     upsert_asset,
     upsert_reference,
     validate_tags_exist,
 )
-from app.assets.helpers import normalize_tags
+from app.assets.helpers import get_utc_now, normalize_tags
+from app.assets.services.bulk_ingest import batch_insert_seed_assets
 from app.assets.services.file_utils import get_size_and_mtime_ns
+from app.assets.services.image_dimensions import extract_image_dimensions
 from app.assets.services.path_utils import (
-    compute_relative_filename,
+    compute_loader_path,
     get_name_and_tags_from_asset_path,
+    get_path_derived_tags_from_path,
     resolve_destination_from_tags,
     validate_path_within_base,
 )
@@ -84,6 +92,7 @@ def _ingest_file_from_path(
             name=info_name or os.path.basename(locator),
             mtime_ns=mtime_ns,
             owner_id=owner_id,
+            loader_path=compute_loader_path(locator),
         )
 
         # Get the reference we just created/updated
@@ -94,17 +103,32 @@ def _ingest_file_from_path(
             if preview_id and ref.preview_id != preview_id:
                 ref.preview_id = preview_id
 
-            norm = normalize_tags(list(tags))
-            if norm:
+            try:
+                backend_tags = get_path_derived_tags_from_path(locator)
+            except ValueError:
+                backend_tags = []
+            caller_tags = normalize_tags(tags)
+            backend_tags = normalize_tags(backend_tags)
+            all_tags = normalize_tags([*caller_tags, *backend_tags])
+            if all_tags:
                 if require_existing_tags:
-                    validate_tags_exist(session, norm)
-                add_tags_to_reference(
-                    session,
-                    reference_id=reference_id,
-                    tags=norm,
-                    origin=tag_origin,
-                    create_if_missing=not require_existing_tags,
-                )
+                    validate_tags_exist(session, all_tags)
+                if backend_tags:
+                    add_tags_to_reference(
+                        session,
+                        reference_id=reference_id,
+                        tags=backend_tags,
+                        origin="automatic",
+                        create_if_missing=not require_existing_tags,
+                    )
+                if caller_tags:
+                    add_tags_to_reference(
+                        session,
+                        reference_id=reference_id,
+                        tags=caller_tags,
+                        origin=tag_origin,
+                        create_if_missing=not require_existing_tags,
+                    )
 
             _update_metadata_with_filename(
                 session,
@@ -112,6 +136,14 @@ def _ingest_file_from_path(
                 file_path=ref.file_path,
                 current_metadata=ref.user_metadata,
                 user_metadata=user_metadata,
+            )
+
+            _maybe_store_image_dimensions(
+                session,
+                reference_id=reference_id,
+                file_path=locator,
+                mime_type=mime_type,
+                current_system_metadata=ref.system_metadata,
             )
 
         try:
@@ -128,6 +160,102 @@ def _ingest_file_from_path(
         ref_updated=ref_updated,
         reference_id=reference_id,
     )
+
+
+def register_output_files(
+    file_paths: Sequence[str],
+    user_metadata: UserMetadata = None,
+    job_id: str | None = None,
+) -> int:
+    """Register a batch of output file paths as assets.
+
+    Returns the number of files successfully registered.
+    """
+    registered = 0
+    for abs_path in file_paths:
+        if not os.path.isfile(abs_path):
+            continue
+        try:
+            if ingest_existing_file(
+                abs_path, user_metadata=user_metadata, job_id=job_id
+            ):
+                registered += 1
+        except Exception:
+            logging.exception("Failed to register output: %s", abs_path)
+    return registered
+
+
+def ingest_existing_file(
+    abs_path: str,
+    user_metadata: UserMetadata = None,
+    extra_tags: Sequence[str] = (),
+    owner_id: str = "",
+    job_id: str | None = None,
+) -> bool:
+    """Register an existing on-disk file as an asset stub.
+
+    If a reference already exists for this path, updates mtime_ns, job_id,
+    size_bytes, and resets enrichment so the enricher will re-hash it.
+
+    For brand-new paths, inserts a stub record (hash=NULL) for immediate
+    UX visibility.
+
+    Returns True if a row was inserted or updated, False otherwise.
+    """
+    locator = os.path.abspath(abs_path)
+    size_bytes, mtime_ns = get_size_and_mtime_ns(abs_path)
+    mime_type = mimetypes.guess_type(abs_path, strict=False)[0]
+    name, path_tags = get_name_and_tags_from_asset_path(abs_path)
+    tags = list(dict.fromkeys(path_tags + list(extra_tags)))
+
+    with create_session() as session:
+        existing_ref = get_reference_by_file_path(session, locator)
+        if existing_ref is not None:
+            now = get_utc_now()
+            existing_ref.mtime_ns = mtime_ns
+            existing_ref.job_id = job_id
+            existing_ref.is_missing = False
+            existing_ref.deleted_at = None
+            existing_ref.updated_at = now
+            existing_ref.enrichment_level = 0
+
+            asset = existing_ref.asset
+            if asset:
+                # If other refs share this asset, detach to a new stub
+                # instead of mutating the shared row.
+                siblings = count_active_siblings(session, asset.id, existing_ref.id)
+                if siblings > 0:
+                    new_asset = create_stub_asset(
+                        session,
+                        size_bytes=size_bytes,
+                        mime_type=mime_type or asset.mime_type,
+                    )
+                    existing_ref.asset_id = new_asset.id
+                else:
+                    asset.hash = None
+                    asset.size_bytes = size_bytes
+                    if mime_type:
+                        asset.mime_type = mime_type
+            session.commit()
+            return True
+
+        spec = {
+            "abs_path": abs_path,
+            "size_bytes": size_bytes,
+            "mtime_ns": mtime_ns,
+            "info_name": name,
+            "tags": tags,
+            "fname": compute_loader_path(abs_path),
+            "metadata": None,
+            "hash": None,
+            "mime_type": mime_type,
+            "job_id": job_id,
+        }
+        if tags:
+            ensure_tags_exist(session, tags)
+        result = batch_insert_seed_assets(session, [spec], owner_id=owner_id)
+        session.commit()
+        return result.won_paths > 0
 
 
 def _register_existing_asset(
@@ -177,7 +305,7 @@ def _register_existing_asset(
             return result
 
         new_meta = dict(user_metadata)
-        computed_filename = compute_relative_filename(ref.file_path) if ref.file_path else None
+        computed_filename = compute_loader_path(ref.file_path) if ref.file_path else None
         if computed_filename:
             new_meta["filename"] = computed_filename
 
@@ -187,6 +315,13 @@ def _register_existing_asset(
                 reference_id=ref.id,
                 user_metadata=new_meta,
             )
+
+        _backfill_image_dimensions_from_siblings(
+            session,
+            asset_id=asset.id,
+            new_reference_id=ref.id,
+            current_system_metadata=ref.system_metadata,
+        )
 
         if tags is not None:
             set_reference_tags(
@@ -217,7 +352,7 @@ def _update_metadata_with_filename(
     current_metadata: dict | None,
     user_metadata: dict[str, Any],
 ) -> None:
-    computed_filename = compute_relative_filename(file_path) if file_path else None
+    computed_filename = compute_loader_path(file_path) if file_path else None
 
     current_meta = current_metadata or {}
     new_meta = dict(current_meta)
@@ -232,6 +367,87 @@ def _update_metadata_with_filename(
             reference_id=reference_id,
             user_metadata=new_meta,
         )
+
+
+_IMAGE_DIMENSION_KEYS = ("kind", "width", "height")
+
+
+def _maybe_store_image_dimensions(
+    session: Session,
+    reference_id: str,
+    file_path: str,
+    mime_type: str | None,
+    current_system_metadata: dict | None,
+) -> None:
+    """Populate ``kind``/``width``/``height`` on system_metadata for image refs.
+
+    Non-image MIME types are a no-op. Pre-existing keys (e.g. enricher-written
+    safetensors metadata, download provenance) are preserved by merge.
+    """
+    if not mime_type or not mime_type.startswith("image/"):
+        return
+
+    dims = extract_image_dimensions(file_path, mime_type=mime_type)
+    if not dims:
+        return
+
+    current = current_system_metadata or {}
+    merged = dict(current)
+    merged.update(dims)
+    if merged != current:
+        set_reference_system_metadata(
+            session,
+            reference_id=reference_id,
+            system_metadata=merged,
+        )
+
+
+def _backfill_image_dimensions_from_siblings(
+    session: Session,
+    asset_id: str,
+    new_reference_id: str,
+    current_system_metadata: dict | None,
+) -> None:
+    """Copy image dimension keys from any sibling reference of the same asset.
+
+    The from-hash path doesn't read the file bytes, so dimensions can't be
+    extracted there directly. When another reference of the same asset already
+    carries image dimensions, copy them onto the new reference so consumers
+    see consistent metadata regardless of how the asset was registered.
+
+    Best-effort: missing siblings, non-image siblings, or absent dimension
+    keys leave the target reference unchanged.
+    """
+    current = current_system_metadata or {}
+    if current.get("kind") == "image" and "width" in current and "height" in current:
+        return
+
+    for sibling in list_references_by_asset_id(session, asset_id):
+        if sibling.id == new_reference_id:
+            continue
+        meta = sibling.system_metadata or {}
+        if meta.get("kind") != "image":
+            continue
+        width = meta.get("width")
+        height = meta.get("height")
+        if (
+            type(width) is not int
+            or type(height) is not int
+            or width <= 0
+            or height <= 0
+        ):
+            continue
+        merged = dict(current)
+        merged["kind"] = "image"
+        merged["width"] = width
+        merged["height"] = height
+        if merged != current:
+            set_reference_system_metadata(
+                session,
+                reference_id=new_reference_id,
+                system_metadata=merged,
+            )
+        return
 
 
 def _sanitize_filename(name: str | None, fallback: str) -> str:
@@ -275,6 +491,10 @@ def upload_from_temp_path(
         existing = get_asset_by_hash(session, asset_hash=asset_hash)
 
     if existing is not None:
+        # Once content is already known, duplicate byte uploads are treated as
+        # reference-only creation. Request tags are labels only here: do not
+        # require upload destination tags, do not move bytes, and do not
+        # synthesize path-derived classification or uploaded provenance.
         with contextlib.suppress(Exception):
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -336,7 +556,7 @@ def upload_from_temp_path(
         owner_id=owner_id,
         preview_id=preview_id,
         user_metadata=user_metadata or {},
-        tags=tags,
+        tags=[*(tags or []), "uploaded"],
         tag_origin="manual",
         require_existing_tags=False,
     )
@@ -370,15 +590,19 @@ def register_file_in_place(
 ) -> UploadResult:
     """Register an already-saved file in the asset database without moving it.
 
-    Tags are derived from the filesystem path (root category + subfolder names),
-    merged with any caller-provided tags, matching the behavior of the scanner.
+    This helper is used by upload paths that have already written bytes before
+    registering the file, so it records the same ``uploaded`` tag as the
+    multipart byte-upload path.
+
+    Tags are derived from trusted filesystem classification and merged with any
+    caller-provided tags, matching the behavior of the scanner.
     If the path is not under a known root, only the caller-provided tags are used.
     """
     try:
         _, path_tags = get_name_and_tags_from_asset_path(abs_path)
     except ValueError:
         path_tags = []
-    merged_tags = normalize_tags([*path_tags, *tags])
+    merged_tags = normalize_tags([*path_tags, *tags, "uploaded"])
 
     try:
         digest, _ = hashing.compute_blake3_hash(abs_path)

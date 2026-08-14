@@ -9,8 +9,9 @@ The packed sequence is:
 Timestep domain: the model receives the *video* sigma from the sampler and
 derives per-token timesteps t = 1 - sigma internally; the audio stream runs on
 its own shifted schedule (sigma_shift video 12.0 / audio 3.0), mapped from the
-video sigma in closed form. The audio velocity is returned scaled by the
-schedule map's derivative d(sigma_a)/d(sigma_v).
+video sigma in closed form. The sampler carries the audio latent scaled onto the
+video schedule (ModelSamplingAV); forward() undoes that scale and converts the
+velocity back, so _forward only ever sees the stream's own latent.
 """
 
 import math
@@ -24,7 +25,7 @@ import comfy.model_prefetch
 import comfy.ops
 import comfy.patcher_extension
 import comfy.quant_ops
-from comfy.ldm.modules.attention import optimized_attention
+from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
 
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)
 FRAME_RESCALE = 5.0 / 3.0
@@ -36,17 +37,6 @@ def time_shift_sigma(sigma, from_shift, to_shift):
     # invert sigma = s*b/(1+(s-1)*b) to the base grid, re-apply the other shift
     base = sigma / (from_shift + sigma * (1.0 - from_shift))
     return to_shift * base / (1.0 + (to_shift - 1.0) * base)
-
-
-def time_shift_slope(sigma, from_shift, to_shift):
-    """d(sigma_to)/d(sigma_from) at the same base-grid point.
-
-    Scaling a stream's returned velocity by this slope makes the flat ODE that
-    any sampler integrates on the from-schedule equal to that stream's true ODE
-    on its own schedule.
-    """
-    base = sigma / (from_shift + sigma * (1.0 - from_shift))
-    return (to_shift * (1.0 + (from_shift - 1.0) * base) ** 2) / (from_shift * (1.0 + (to_shift - 1.0) * base) ** 2)
 
 
 def patchify_video(latent, patch_size=(1, 2, 2)):
@@ -99,6 +89,18 @@ def _video_t_grid(n, origin):
     # origin + exclusive cumsum
     spans = torch.tensor(_video_t_spans(n), dtype=torch.float64)
     return float(origin) + torch.cat([torch.zeros(1, dtype=torch.float64), spans[:-1].cumsum(0)])
+
+
+def _ref_t_span(blk):
+    # time-axis span a reference block occupies ahead of the target streams
+    kind = blk["kind"]
+    if kind == "image":
+        return 1.0
+    if kind == "audio":
+        return float(blk["ref_audio_t"])
+    if kind in ("video", "video_audio"):
+        return max(float(blk["ref_audio_t"]), sum(_video_t_spans(blk["latent_t"])))
+    return 0.0
 
 
 def _audio_grid(cursor, t, w_low, w_high):
@@ -175,9 +177,10 @@ class Attention(nn.Module):
         else:
             q = self.q_norm(q.view(s, self.heads, self.head_dim))
             k = self.k_norm(k.view(s, self.heads, self.head_dim))
-        q = q.transpose(0, 1).unsqueeze(0)
-        k = k.transpose(0, 1).unsqueeze(0)
-        v = v.transpose(0, 1).unsqueeze(0)
+        v = v.clone()
+        q = AttentionTensorContainer(q.transpose(0, 1).unsqueeze(0))
+        k = AttentionTensorContainer(k.transpose(0, 1).unsqueeze(0))
+        v = AttentionTensorContainer(v.transpose(0, 1).unsqueeze(0))
         out = optimized_attention(q, k, v, self.heads, mask=None, skip_reshape=True, transformer_options=transformer_options)
         return self.out_proj(out.squeeze(0))
 
@@ -297,7 +300,7 @@ class FinalLayer(nn.Module):
 class PackedLayout:
     """Static packed-sequence structure for one shape/conditioning signature."""
 
-    def __init__(self, text_len, latent_t, latent_h, latent_w, audio_t, keyframes=None, refs=None, frame_count=None):
+    def __init__(self, text_len, latent_t, latent_h, latent_w, audio_t, keyframes=None, refs=None):
         frame, w_grid = _frame_grid(latent_h, latent_w)
         frame_rows = frame.shape[0]
 
@@ -308,29 +311,37 @@ class PackedLayout:
 
         img_pos, img_update = [], []
         audio_pos, audio_update = [], []
-        cursor = text_len
         row = text_len
 
-        if keyframes:
-            # fl2va: keyframe cond rows right after text, sharing the target spatial grid
-            for kf in keyframes:
-                pixel_index = kf["resolved_frame_index"]
-                if pixel_index == 0:
-                    cond_t = float(text_len)
-                elif frame_count is not None and pixel_index == frame_count - 1:
-                    cond_t = float(text_len) + sum(_video_t_spans(latent_t)) - FRAME_RESCALE
-                else:
-                    raise ValueError("only first/last keyframe anchors are supported")
-                g = torch.empty(frame_rows, 3, dtype=torch.float64)
-                g[:, 0] = cond_t
-                g[:, 1:] = frame
-                segments.append(("cond", frame_rows))
-                pos.append(g)
-                img_pos.append(torch.arange(row, row + frame_rows))
-                img_update.append(torch.zeros(frame_rows, dtype=torch.bool))
-                row += frame_rows
-
         target_audio_w = (float(w_grid[0]), float(w_grid[-1]))
+        # refs pack between text and the targets, so the target timeline starts after their spans
+        cursor = float(text_len)
+        for blk in refs or ():
+            cursor += _ref_t_span(blk)
+
+        if keyframes:
+            # fl2va: keyframe cond rows right after text, sharing the target spatial grid;
+            # anchors count from the target timeline origin, FRAME_RESCALE per pixel frame, 1.0 per audio latent frame
+            for kf in keyframes:
+                cond_t = cursor + FRAME_RESCALE * kf["resolved_frame_index"]
+                video_latent = kf.get("latent")
+                if video_latent is not None:
+                    vt = video_latent.shape[2]
+                    n = vt * frame_rows
+                    segments.append(("cond", n))
+                    pos.append(_video_grid(vt, frame, cond_t))
+                    img_pos.append(torch.arange(row, row + n))
+                    img_update.append(torch.zeros(n, dtype=torch.bool))
+                    row += n
+                audio_latent = kf.get("audio_latent")
+                if audio_latent is not None:
+                    rt = audio_latent.shape[-1]
+                    segments.append(("cond_audio", rt * 2))
+                    pos.append(_audio_grid(cond_t, rt, *target_audio_w))
+                    audio_pos.append(torch.arange(row, row + rt * 2))
+                    audio_update.append(torch.zeros(rt * 2, dtype=torch.bool))
+                    row += rt * 2
+
         if refs:
             cursor = float(text_len)
             for blk in refs:
@@ -398,7 +409,7 @@ class PackedLayout:
         self.audio_update = torch.cat(audio_update)
         self.signature = (text_len, latent_t, latent_h, latent_w, audio_t)
         # contiguous segment table (start, stop, kind)
-        # kinds: text / cond / ref_img / ref_audio / audio / video
+        # kinds: text / cond / cond_audio / ref_img / ref_audio / audio / video
         # the packed sequence is uniform per segment in (modality tag, timestep class),
         # except the text span (tag runs resolved at forward time from the presentation tags)
         seg_abs = []
@@ -496,11 +507,29 @@ class MiniMaxH3Model(nn.Module):
         return torch.cat(rows, dim=0) if rows else None
 
     def forward(self, x, timestep, context, transformer_options={}, minimax_payload=None, **kwargs):
-        return comfy.patcher_extension.WrapperExecutor.new_class_executor(
+        # the sampler carries the audio as (sigma_v / sigma_a) * x_audio; undo it outside
+        # the wrappers so they and the network see the stream's own latent and velocity
+        scale = float((minimax_payload or {}).get("audio_scale", 1.0))
+        audio_src = x[1]
+        if scale != 1.0:
+            shift_v = float(transformer_options.get("minimax_h3_sigma_shift_video", self.sigma_shift_video))
+            shift_a = float(transformer_options.get("minimax_h3_sigma_shift_audio", self.sigma_shift_audio))
+            sigma_v = (timestep.flatten()[0] / 1000.0).float().clamp(min=1e-6)
+            sigma_a = time_shift_sigma(sigma_v, shift_v, shift_a)
+            carry = (sigma_a / sigma_v).to(audio_src.dtype)
+            x = [x[0], audio_src * carry]
+
+        out = comfy.patcher_extension.WrapperExecutor.new_class_executor(
             self._forward,
             self,
             comfy.patcher_extension.get_all_wrappers(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, transformer_options)
         ).execute(x, timestep, context, transformer_options, minimax_payload=minimax_payload, **kwargs)
+
+        if scale != 1.0:
+            # d/d(sigma_v) of the carried variable
+            out[1] = ((1.0 - scale) * (audio_src * carry)
+                      + (1.0 + (scale - 1.0) * sigma_a).to(out[1].dtype) * out[1])
+        return out
 
     def _forward(self, x, timestep, context, transformer_options={}, minimax_payload=None, **kwargs):
         video_x, audio_x = x[0], x[1]
@@ -520,8 +549,7 @@ class MiniMaxH3Model(nn.Module):
         if layout is None or layout.signature != (text_len, latent_t, lat_h, lat_w, audio_t):
             layout = PackedLayout(text_len, latent_t, lat_h, lat_w, audio_t,
                                   keyframes=payload.get("keyframes"),
-                                  refs=payload.get("refs"),
-                                  frame_count=payload.get("frame_count"))
+                                  refs=payload.get("refs"))
 
         # model_base passes model_sampling.timestep(sigma) = sigma * 1000
         shift_v = float(transformer_options.get("minimax_h3_sigma_shift_video", self.sigma_shift_video))
@@ -534,14 +562,14 @@ class MiniMaxH3Model(nn.Module):
         vis_aug = float(payload.get("visual_cond_noise_aug", VISUAL_COND_TIMESTEP))
         aud_aug = float(payload.get("audio_cond_noise_aug", AUDIO_COND_TIMESTEP))
         has_vis_cond = any(k in ("cond", "ref_img") for _, _, k in layout.segments)
-        has_aud_cond = any(k == "ref_audio" for _, _, k in layout.segments)
+        has_aud_cond = any(k in ("cond_audio", "ref_audio") for _, _, k in layout.segments)
         seg_t = {"text": t_v, "video": t_v, "audio": t_a,
                  "cond": max(t_v, vis_aug), "ref_img": max(t_v, vis_aug),
-                 "ref_audio": max(t_a, aud_aug)}
+                 "cond_audio": max(t_a, aud_aug), "ref_audio": max(t_a, aud_aug)}
         unique_t = sorted({t_v, t_a} | ({seg_t["cond"]} if has_vis_cond else set())
                           | ({seg_t["ref_audio"]} if has_aud_cond else set()))
         t_row = {t: i for i, t in enumerate(unique_t)}
-        seg_tag = {"text": 1, "video": 0, "audio": 2, "cond": 0, "ref_img": 0, "ref_audio": 2}
+        seg_tag = {"text": 1, "video": 0, "audio": 2, "cond": 0, "ref_img": 0, "cond_audio": 2, "ref_audio": 2}
 
         text_tags = payload.get("text_token_tags")
         mod_segments = []
@@ -639,8 +667,4 @@ class MiniMaxH3Model(nn.Module):
         video_out = video_out[:, :, :orig_t, :orig_h, :orig_w]
         audio_out = unpack_audio(a)
 
-        # The sampler integrates the flat ODE dX/dsigma_v = (X - denoised)/sigma_v.
-        # Scaling the audio velocity by d(sigma_a)/d(sigma_v) makes that ODE equal
-        # to the audio stream's true ODE on its own shifted schedule.
-        slope_a = time_shift_slope(sigma_v, shift_v, shift_a).to(audio_out.dtype)
-        return [-video_out.to(video_x.dtype), (-slope_a) * audio_out.to(audio_x.dtype)]
+        return [-video_out.to(video_x.dtype), -audio_out.to(audio_x.dtype)]

@@ -76,6 +76,7 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
         and t.is_contiguous()
         and t.storage_offset() == 0
         and t.untyped_storage().nbytes() == t.numel() * t.element_size()
+        and t.is_cuda
     )
     if use_gds:
         file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
@@ -83,12 +84,10 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
         t_type = t.dtype
         t_shape = t.shape
         num = t.numel() * t.element_size()
-        del t
         del file
-        gc.collect()
 
         with open(temp_file, "rb") as fo:
-            mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_READ)
+            mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_COPY)
             mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
             mmap_tensor._mmap = mm
     else:
@@ -115,7 +114,7 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
             pass
     
     mmap_file = getattr(mmap_tensor, "_mmap", None)
-    weakref.finalize(mmap_tensor, _cleanup, temp_file, mmap_file)
+    weakref.finalize(mmap_tensor.untyped_storage(), _cleanup, temp_file, mmap_file)
 
     return mmap_tensor
                 
@@ -1274,7 +1273,7 @@ class ModelPatcher:
 
                 
             if device_to is not None:
-                if need_mmap(offload_size=self.model_size()):
+                if need_mmap(offload_size=self.loaded_size()):
                     # offload to mmap
                     try:
                         model_to_mmap(self.model)

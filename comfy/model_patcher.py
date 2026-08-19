@@ -146,8 +146,9 @@ def model_to_mmap(model: torch.nn.Module):
     
     def convert_fn(t):
         if isinstance(t, QuantizedTensor):
-            logging.debug(f"QuantizedTensor detected, mmap skipped, tensor meta info: size {t.size()}, dtype {t.dtype}, device {t.device}, is_contiguous {t.is_contiguous()}")
-            return t
+            inner_tensor_names, quant_ctx = t.__tensor_flatten__()
+            inner_tensors = {name: to_mmap(getattr(t, name)) for name in inner_tensor_names}
+            return QuantizedTensor.__tensor_unflatten__(inner_tensors, quant_ctx, t.size(), t.stride())
         elif isinstance(t, torch.nn.Parameter):
             new_tensor = to_mmap(t.detach())
             return torch.nn.Parameter(new_tensor, requires_grad=t.requires_grad)

@@ -137,7 +137,7 @@ def model_to_mmap(model: torch.nn.Module):
         The same model with all tensors converted to memory-mapped format
     """
     free_cpu_mem = get_free_memory(torch.device("cpu"))
-    free_disk_mem = get_free_disk()
+    free_disk_mem = get_free_disk(dir=tempfile.gettempdir())
     model_mem = comfy.model_management.module_size(model)
     if model_mem > free_disk_mem:
         logging.error(f"Not enough free disk memory to convert model to mmap. Model size: {model_mem/(1024*1024*1024)} GB, free disk memory: {free_disk_mem/(1024*1024*1024)} GB")

@@ -49,8 +49,8 @@ def get_mmap_mem_threshold_gb():
     logging.debug(f"MMAP_MEM_THRESHOLD_GB: {mmap_mem_threshold_gb}")
     return mmap_mem_threshold_gb
 
-def get_free_disk():
-    return psutil.disk_usage("/").free
+def get_free_disk(dir: str = "/"):
+    return psutil.disk_usage(dir).free
 
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram

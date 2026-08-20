@@ -49,8 +49,8 @@ def get_mmap_mem_threshold_gb():
     logging.debug(f"MMAP_MEM_THRESHOLD_GB: {mmap_mem_threshold_gb}")
     return mmap_mem_threshold_gb
 
-def get_free_disk():
-    return psutil.disk_usage("/").free
+def get_free_disk(dir: str = "/"):
+    return psutil.disk_usage(dir).free
 
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram
@@ -829,7 +829,7 @@ class LoadedModel:
         logging.debug(f"before unload, available_memory of offload device {self.model.offload_device}: {available_memory/(1024*1024*1024)} GB")
 
         mmap_mem_threshold = get_mmap_mem_threshold_gb() * 1024 * 1024 * 1024  # this is reserved memory for other system usage
-        if min(memory_to_free, model_loaded_size) > available_memory - mmap_mem_threshold or memory_to_free < model_loaded_size:
+        if memory_to_free < model_loaded_size:
             partially_unload = True
         else:
             partially_unload = False

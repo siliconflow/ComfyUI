@@ -79,18 +79,24 @@ def to_mmap(t: torch.Tensor, filename: Optional[str] = None) -> torch.Tensor:
         and t.is_cuda
     )
     if use_gds:
-        file = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
-        file.save_storage(t.untyped_storage(), offset=0)
-        t_type = t.dtype
-        t_shape = t.shape
-        num = t.numel() * t.element_size()
-        del file
+        gds = None
+        try:
+            gds = torch.cuda.gds.GdsFile(temp_file, os.O_CREAT | os.O_RDWR)
+            gds.save_storage(t.untyped_storage(), offset=0)
+            t_type = t.dtype
+            t_shape = t.shape
+            num = t.numel() * t.element_size()
 
-        with open(temp_file, "rb") as fo:
-            mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_COPY)
-            mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
-            mmap_tensor._mmap = mm
-    else:
+            with open(temp_file, "rb") as fo:
+                mm = mmap.mmap(fo.fileno(), length=num, access=mmap.ACCESS_COPY)
+                mmap_tensor = torch.frombuffer(mm, dtype=t_type).reshape(t_shape).cpu()
+                mmap_tensor._mmap = mm
+        except Exception as e:
+            logging.warning(f"GDS offload failed, falling back to CPU mmap: {e}")
+            use_gds = False
+        finally:
+            del gds
+    if not use_gds:
         cpu_tensor = t.cpu()
         torch.save(cpu_tensor, temp_file)
     

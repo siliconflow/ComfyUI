@@ -130,6 +130,7 @@ def load_torch_file(ckpt, safe_load=False, device=None, return_metadata=False):
                 if not return_metadata:
                     metadata = None
             else:
+                logging.debug(f"load_torch_file of safetensors into mmap {not DISABLE_MMAP}")
                 with safetensors.safe_open(ckpt, framework="pt", device=device.type) as f:
                     sd = {}
                     for k in f.keys():
@@ -150,6 +151,7 @@ def load_torch_file(ckpt, safe_load=False, device=None, return_metadata=False):
     else:
         torch_args = {}
         if MMAP_TORCH_FILES:
+            logging.debug(f"load_torch_file of torch state dict into mmap True")
             torch_args["mmap"] = True
 
         pl_sd = torch.load(ckpt, map_location=device, weights_only=True, **torch_args)

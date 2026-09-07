@@ -759,9 +759,10 @@ class LoraLoaderModelOnly(LoraLoader):
         return {"required": { "model": ("MODEL",),
                               "lora_name": (folder_paths.get_filename_list("loras"), ),
                               "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
-                              }}
+                            }}
     RETURN_TYPES = ("MODEL",)
     DESCRIPTION = "This LoRAs loader is used to modify the diffusion model, altering the way in which latents are denoised such as applying styles. Multiple LoRA nodes can be linked together."
+    SEARCH_ALIASES = ["lora", "load lora", "apply lora", "lora loader", "lora model"]
     FUNCTION = "load_lora_model_only"
 
     def load_lora_model_only(self, model, lora_name, strength_model):
@@ -1947,6 +1948,8 @@ class ImageInvert:
 
     def invert(self, image):
         s = 1.0 - image
+        if image.shape[-1] == 4:  # alpha stores transparency, not color
+            s[..., 3] = image[..., 3]
         return (s,)
 
 class ImageBatch:
@@ -2354,7 +2357,7 @@ async def init_external_custom_nodes():
     node_import_times = []
     for custom_node_path in node_paths:
         possible_modules = sorted(os.listdir(os.path.realpath(custom_node_path)))
-        print("!!!possible_modules2!!!:\n" + "\n".join(possible_modules))
+        logging.info("!!!possible_modules2!!!:\n" + "\n".join(possible_modules))
         if "__pycache__" in possible_modules:
             possible_modules.remove("__pycache__")
 
@@ -2488,6 +2491,7 @@ async def init_builtin_extra_nodes():
         "nodes_pid.py",
         "nodes_model_patch.py",
         "nodes_easycache.py",
+        "nodes_sparse_attention.py",
         "nodes_audio_encoder.py",
         "nodes_rope.py",
         "nodes_logic.py",
@@ -2506,6 +2510,8 @@ async def init_builtin_extra_nodes():
         "nodes_toolkit.py",
         "nodes_replacements.py",
         "nodes_nag.py",
+        "nodes_trellis2.py",
+        "nodes_mesh_postprocess.py",
         "nodes_sdpose.py",
         "nodes_math.py",
         "nodes_number_convert.py",
@@ -2520,7 +2526,9 @@ async def init_builtin_extra_nodes():
         "nodes_void.py",
         "nodes_wandancer.py",
         "nodes_hidream_o1.py",
+        "nodes_sensenova.py",
         "nodes_save_3d.py",
+        "nodes_mesh_io.py",
         "nodes_moge.py",
         "nodes_mediapipe.py",
         "nodes_gaussian_splat.py",
@@ -2528,6 +2536,7 @@ async def init_builtin_extra_nodes():
         "nodes_depth_anything_3.py",
         "nodes_seed.py",
         "nodes_text.py",
+        "nodes_sam3d_body.py",
     ]
 
     import_failed = []

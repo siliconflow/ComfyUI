@@ -30,6 +30,7 @@ import gc
 import os
 from contextlib import contextmanager, nullcontext
 import comfy.memory_management
+import comfy.system_memory
 import comfy.utils
 import comfy.quant_ops
 import comfy_aimdo.host_buffer
@@ -40,6 +41,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
 
+
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def get_mmap_mem_threshold_gb():
+    mmap_mem_threshold_gb = int(os.environ.get("MMAP_MEM_THRESHOLD_GB", "0"))
+    logging.debug(f"MMAP_MEM_THRESHOLD_GB: {mmap_mem_threshold_gb}")
+    return mmap_mem_threshold_gb
+
+def get_free_disk(dir: str = "/"):
+    return psutil.disk_usage(dir).free
 
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram
@@ -318,7 +330,7 @@ def get_total_memory(dev=None, torch_total_too=False):
         dev = get_torch_device()
 
     if hasattr(dev, 'type') and (dev.type == 'cpu' or dev.type == 'mps'):
-        mem_total = psutil.virtual_memory().total
+        mem_total = comfy.system_memory.virtual_memory_total()
         mem_total_torch = mem_total
     else:
         if directml_enabled:
@@ -361,8 +373,11 @@ def mac_version():
         return None
 
 total_vram = get_total_memory(get_torch_device()) / (1024 * 1024)
-total_ram = psutil.virtual_memory().total / (1024 * 1024)
+total_ram = comfy.system_memory.virtual_memory_total() / (1024 * 1024)
 logging.info("Total VRAM {:0.0f} MB, total RAM {:0.0f} MB".format(total_vram, total_ram))
+cgroup_ram_limit = comfy.system_memory.cgroup_memory_limit()
+if cgroup_ram_limit is not None:
+    logging.info("RAM limited by cgroup to {:0.0f} MB (host has {:0.0f} MB)".format(cgroup_ram_limit / (1024 * 1024), psutil.virtual_memory().total / (1024 * 1024)))
 
 try:
     logging.info("pytorch version: {}".format(torch_version))
@@ -515,13 +530,13 @@ try:
         if args.use_split_cross_attention == False and args.use_quad_cross_attention == False:
             if aotriton_supported():  # AMD efficient attention implementation depends on aotriton.
                 if torch_version_numeric >= (2, 7):  # works on 2.6 but doesn't actually seem to improve much
-                    if any((a in arch) for a in ["gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1150", "gfx1151"]):  # TODO: more arches, TODO: gfx950
+                    if any((a in arch) for a in ["gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1150", "gfx1151", "gfx1170", "gfx1171"]):  # TODO: more arches, TODO: gfx950
                         ENABLE_PYTORCH_ATTENTION = True
                 if rocm_version >= (7, 0):
                     if any((a in arch) for a in ["gfx1200", "gfx1201"]):
                         ENABLE_PYTORCH_ATTENTION = True
         if torch_version_numeric >= (2, 7) and rocm_version >= (6, 4):
-            if any((a in arch) for a in ["gfx1200", "gfx1201", "gfx950"]):  # TODO: more arches, "gfx942" gives error on pytorch nightly 2.10 1013 rocm7.0
+            if any((a in arch) for a in ["gfx1200", "gfx1201", "gfx950", "gfx1170", "gfx1171"]):  # TODO: more arches, "gfx942" gives error on pytorch nightly 2.10 1013 rocm7.0
                 SUPPORT_FP8_OPS = True
 
 except:
@@ -703,7 +718,7 @@ def should_free_pins_for_ram_pressure(shortfall):
         return False
     if not WINDOWS:
         return True
-    if psutil.virtual_memory().available < WINDOWS_PIN_EVICTION_EMERGENCY_AVAILABLE:
+    if comfy.system_memory.virtual_memory_available() < WINDOWS_PIN_EVICTION_EMERGENCY_AVAILABLE:
         return True
     try:
         return psutil.swap_memory().percent >= WINDOWS_PIN_EVICTION_SWAP_PERCENT
@@ -717,7 +732,7 @@ def ensure_pin_budget(size, evict_active=False, loaded=False):
     if args.fast_disk:
         shortfall = TOTAL_PINNED_MEMORY + size - MAX_PINNED_MEMORY
     else:
-        shortfall = size + max(comfy.memory_management.RAM_CACHE_HEADROOM / 2, 2048 * 1024 ** 2) - psutil.virtual_memory().available
+        shortfall = size + max(comfy.memory_management.RAM_CACHE_HEADROOM / 2, 2048 * 1024 ** 2) - comfy.system_memory.virtual_memory_available()
     if shortfall <= 0:
         return True
 
@@ -803,16 +818,50 @@ class LoadedModel:
         return False
 
     def model_unload(self, memory_to_free=None, unpatch_weights=True):
-        if memory_to_free is not None:
-            if memory_to_free < self.model.loaded_size():
-                freed = self.model.partially_unload(self.model.offload_device, memory_to_free)
-                if freed >= memory_to_free:
-                    return False
-        self.model.detach(unpatch_weights)
-        self.model_finalizer.detach()
-        self.model_finalizer = None
-        self.real_model = None
-        return True
+        model_loaded_size = self.model.loaded_size()
+        if memory_to_free is None:
+            # free the full model
+            memory_to_free = model_loaded_size
+
+        logging.debug(f"model_unload: {self.model.model.__class__.__name__}")
+        logging.debug(f"memory_to_free: {memory_to_free/(1024*1024*1024)} GB")
+        logging.debug(f"unpatch_weights: {unpatch_weights}")
+        logging.debug(f"loaded_size: {model_loaded_size/(1024*1024*1024)} GB")
+        logging.debug(f"offload_device: {self.model.offload_device}")
+
+        available_memory = get_free_memory(self.model.offload_device)
+        logging.debug(f"before unload, available_memory of offload device {self.model.offload_device}: {available_memory/(1024*1024*1024)} GB")
+
+        mmap_mem_threshold = get_mmap_mem_threshold_gb() * 1024 * 1024 * 1024  # this is reserved memory for other system usage
+        if memory_to_free < model_loaded_size:
+            partially_unload = True
+        else:
+            partially_unload = False
+
+        if partially_unload:
+            logging.debug("Do partially unload")
+            freed = self.model.partially_unload(self.model.offload_device, memory_to_free)
+            logging.debug(f"partially_unload freed vram: {freed/(1024*1024*1024)} GB")
+            if freed < memory_to_free:
+                logging.warning(f"Partially unload not enough memory, freed {freed/(1024*1024*1024)} GB, memory_to_free {memory_to_free/(1024*1024*1024)} GB")
+            if freed == model_loaded_size:
+                partially_unload = False
+        else:
+            logging.debug("Do full unload")
+            self.model.detach(unpatch_weights)
+            logging.debug("Do full unload done")
+            self.model_finalizer.detach()
+            self.model_finalizer = None
+            self.real_model = None
+
+        available_memory = get_free_memory(self.model.offload_device)
+        logging.debug(f"after unload, available_memory of offload device {self.model.offload_device}: {available_memory/(1024*1024*1024)} GB")
+
+        if partially_unload:
+            return False
+        else:
+            return True
+
 
     def model_use_more_vram(self, extra_memory, force_patch_weights=False):
         return self.model.partially_load(self.device, extra_memory, force_patch_weights=force_patch_weights)
@@ -861,6 +910,7 @@ def minimum_inference_memory():
     return (1024 * 1024 * 1024) * 0.8 + extra_reserved_memory()
 
 def free_memory(memory_required, device, keep_loaded=[], for_dynamic=False, pins_required=0, ram_required=0):
+    logging.debug("start to free mem")
     cleanup_models_gc()
     if not for_dynamic:
         detail("Non dynamic memory free called! memory_required=%s pins_required=%s ram_required=%s", memory_required, pins_required, ram_required)
@@ -907,6 +957,7 @@ def free_memory(memory_required, device, keep_loaded=[], for_dynamic=False, pins
     return unloaded_models
 
 def load_models_gpu(models, memory_required=0, force_patch_weights=False, minimum_memory_required=None, force_full_load=False):
+    logging.debug(f"start to load models")
     cleanup_models_gc()
     global vram_state
 
@@ -931,6 +982,7 @@ def load_models_gpu(models, memory_required=0, force_patch_weights=False, minimu
 
     free_for_dynamic=True
     for x in models:
+        logging.debug(f"start loading model to vram: {x.model.__class__.__name__}")
         if not x.is_dynamic():
             free_for_dynamic = False
         loaded_model = LoadedModel(x)
@@ -1369,6 +1421,7 @@ LARGEST_CASTED_WEIGHT = (None, 0)
 STREAM_AIMDO_CAST_BUFFERS = {}
 LARGEST_AIMDO_CASTED_WEIGHT = (None, 0)
 CROSS_STEP_STATE = weakref.WeakSet()
+MALLOC_GRAPH_MODULES = weakref.WeakSet()
 
 DEFAULT_AIMDO_CAST_BUFFER_RESERVATION_SIZE = 16 * 1024 ** 3
 
@@ -1454,6 +1507,9 @@ def reset_cast_buffers():
 
     STREAM_CAST_BUFFERS.clear()
     STREAM_AIMDO_CAST_BUFFERS.clear()
+    for module in MALLOC_GRAPH_MODULES:
+        del module._comfy_malloc_graph
+    MALLOC_GRAPH_MODULES.clear()
     soft_empty_cache()
 
 def get_offload_stream(device):
@@ -1584,7 +1640,8 @@ if not args.disable_pinned_memory:
         if WINDOWS:
             MAX_PINNED_MEMORY = ram * 0.40  # Windows limit is apparently 50%
         else:
-            MAX_PINNED_MEMORY = max(ram * 0.40, min(ram * 0.90, ram - 4 * 1024 ** 3, ram + get_disk_swap_total() - 16 * 1024 ** 3))
+            swap = 0 if comfy.system_memory.cgroup_memory_limit() is not None else get_disk_swap_total()
+            MAX_PINNED_MEMORY = max(ram * 0.40, min(ram * 0.90, ram - 4 * 1024 ** 3, ram + swap - 16 * 1024 ** 3))
         logging.info("Enabled pinned memory {}".format(MAX_PINNED_MEMORY // (1024 * 1024)))
 
 PINNING_ALLOWED_TYPES = set(["Tensor", "Parameter", "QuantizedTensor"])
@@ -1751,7 +1808,7 @@ def get_free_memory(dev=None, torch_free_too=False):
         dev = get_torch_device()
 
     if hasattr(dev, 'type') and (dev.type == 'cpu' or dev.type == 'mps'):
-        mem_free_total = psutil.virtual_memory().available
+        mem_free_total = comfy.system_memory.virtual_memory_available()
         mem_free_torch = mem_free_total
     else:
         if directml_enabled:
@@ -1999,7 +2056,7 @@ def supports_mxfp8_compute(device=None):
     return True
 
 def supports_fp64(device=None):
-    if is_device_mps(device):
+    if (device is not None and is_device_mps(device)) or mps_mode():
         return False
 
     if is_intel_xpu():

@@ -372,6 +372,23 @@ def mac_version():
     except:
         return None
 
+_METAX_CUDA = torch_version.partition("+")[2].startswith("mars") and get_torch_device().type == "cuda"
+
+if _METAX_CUDA:
+    import comfy_kitchen
+    from comfy_kitchen import flash_attention, gated_delta
+
+    def _unavailable_on_metax(*args, **kwargs):
+        return False
+
+    # The capability probes accept MetaX's CUDA device, but these kernels fail at launch.
+    # Use the existing PyTorch decode and ComfyUI attention fallbacks.
+    flash_attention.flash_attention_decode_gqa_is_available = _unavailable_on_metax
+    gated_delta.deferred_is_available = _unavailable_on_metax
+    comfy_kitchen.int8_attention_is_available = _unavailable_on_metax
+    if args.use_ck_attention:
+        logging.warning("--use-ck-attention is unavailable on MetaX. Using ComfyUI's default attention backend.")
+
 total_vram = get_total_memory(get_torch_device()) / (1024 * 1024)
 total_ram = comfy.system_memory.virtual_memory_total() / (1024 * 1024)
 logging.info("Total VRAM {:0.0f} MB, total RAM {:0.0f} MB".format(total_vram, total_ram))
@@ -1842,7 +1859,7 @@ def sage_attention_enabled():
     return args.use_sage_attention
 
 def comfy_kitchen_attention_enabled():
-    return args.use_ck_attention
+    return args.use_ck_attention and not _METAX_CUDA
 
 def flash_attention_enabled():
     return args.use_flash_attention

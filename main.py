@@ -201,9 +201,10 @@ def execute_prestartup_script():
     node_prestartup_times = []
     for custom_node_path in node_paths:
         try:
-            possible_modules = os.listdir(custom_node_path)
+            possible_modules = sorted(os.listdir(custom_node_path))
         except FileNotFoundError:
             continue
+        logging.info("!!!possible_modules1!!!:\n" + "\n".join(possible_modules))
 
         for possible_module in possible_modules:
             module_path = os.path.join(custom_node_path, possible_module)
